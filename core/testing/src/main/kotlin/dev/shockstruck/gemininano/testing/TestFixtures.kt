@@ -11,6 +11,7 @@ import dev.shockstruck.gemininano.model.GenAiFailure
 import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.ManifestApkKind
 import dev.shockstruck.gemininano.model.ManifestAssociationPackageFacts
+import dev.shockstruck.gemininano.model.ManifestAttributeFacts
 import dev.shockstruck.gemininano.model.ManifestBooleanValue
 import dev.shockstruck.gemininano.model.ManifestComponentFacts
 import dev.shockstruck.gemininano.model.ManifestElementFacts
@@ -292,16 +293,18 @@ object TestFixtures {
         components: List<ManifestComponentFacts> = emptyList(),
         pccElements: List<ManifestElementFacts> = emptyList(),
         usesPermissions: List<ManifestUsesPermissionFacts> = emptyList(),
+        sharedUserId: String? = null,
     ): ManifestReadOutcome.Read = ManifestReadOutcome.Read(
         packageName = packageName,
         facts = ManifestPackageFacts(
             packageName = packageName,
+            effectiveSharedUserId = sharedUserId,
             signerCertificateSha256 = signerSha256,
             sources = listOf(
                 ManifestSourceFacts(
                     source = ManifestSourceId("base.apk", ManifestApkKind.BASE),
                     declaredPackage = declaredPackage,
-                    sharedUserId = null,
+                    sharedUserId = sharedUserId,
                     versionName = "1.0.0",
                     components = components,
                     pccElements = pccElements,
@@ -321,6 +324,16 @@ object TestFixtures {
         permission = null,
         process = null,
         privateComputeCore = ManifestBooleanValue.TRUE,
+        matchingAttributes = listOf(
+            ManifestAttributeFacts(
+                name = "privateComputeCore",
+                namespace = "http://schemas.android.com/apk/res/android",
+                resourceIdHex = "0x01010512",
+                rawValue = "true",
+                typedValue = "true",
+                dataType = "TYPE_INT_BOOLEAN",
+            ),
+        ),
     )
 
     fun usesPermission(name: String): ManifestUsesPermissionFacts =
@@ -329,6 +342,16 @@ object TestFixtures {
     fun associationElement(vararg packageNames: String): ManifestElementFacts =
         ManifestElementFacts(
             name = "component-access",
+            attributes = listOf(
+                ManifestAttributeFacts(
+                    name = "name",
+                    namespace = "http://schemas.android.com/apk/res/android",
+                    resourceIdHex = "0x01010003",
+                    rawValue = "component-access",
+                    typedValue = "component-access",
+                    dataType = "TYPE_STRING",
+                ),
+            ),
             packages = packageNames.map { packageName ->
                 ManifestAssociationPackageFacts(
                     name = packageName,

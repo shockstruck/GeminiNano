@@ -583,7 +583,7 @@ class FullDiagnosticsReportTest {
                 ClassifierEvidence(
                     statement = "The July 2025 PCS gate was read in a source mirror.",
                     strength = EvidenceStrength.INFERRED,
-                    source = "SHOC-6785",
+                    source = "July 2025 public PCS dump",
                 ),
             ),
             refutations = listOf("a PCS GetManifestConfig response"),
@@ -628,19 +628,61 @@ class FullDiagnosticsReportTest {
         val exported = manifests.getJSONObject(0)
         assertEquals(PlatformPrincipals.PCS, exported.getString("requestedPackage"))
         assertEquals("read complete", exported.getString("read"))
-        assertTrue(exported.getJSONObject("pccComponents").getInt("matchedCount") > 0)
+        val pcc = exported.getJSONObject("pccComponents")
+        assertTrue(pcc.getInt("matchedCount") > 0)
+        val component = pcc.getJSONArray("components").getJSONObject(0)
+        assertEquals("service", component.getString("kind"))
+        assertEquals("com.example.PccService", component.getString("name"))
+        assertEquals("TRUE", component.getString("privateComputeCore"))
+        assertEquals("true", component.getString("rawValue"))
+        assertEquals("true", component.getString("typedValue"))
         assertEquals(
             "android.permission.READ_DEVICE_CONFIG",
             exported.getJSONArray("usesPermissions").getJSONObject(0).getString("name"),
         )
         assertEquals(0, exported.getJSONArray("declaredPermissions").length())
+        assertEquals(false, exported.getBoolean("partial"))
+        val element = exported.getJSONObject("associationPolicy")
+            .getJSONArray("elements").getJSONObject(0)
+        assertEquals("component-access", element.getString("name"))
+        assertEquals("name", element.getJSONArray("attributes").getJSONObject(0).getString("name"))
         assertEquals(
             PlatformPrincipals.AICORE,
-            exported.getJSONObject("associationPolicy")
-                .getJSONArray("packages").getJSONObject(0).getString("name"),
+            element.getJSONArray("packages").getJSONObject(0).getString("name"),
         )
         assertTrue(report.text.contains("== Provisioning failure classifier =="))
-        assertTrue(report.text.contains("== Installed manifest evidence (Stage 6 reader) =="))
+        assertTrue(report.text.contains("== Installed manifest evidence =="))
+        assertTrue(report.text.contains("service com.example.PccService privateComputeCore=TRUE"))
+        assertFalse(report.text.contains("Stage 6"))
+        assertTrue(report.text.contains("a declared association policy is not proof of enforcement"))
+        val trackerPrefix = "SH" + "OC-"
+        assertFalse(report.json.contains(trackerPrefix))
+        assertFalse(report.text.contains(trackerPrefix))
+    }
+
+    @Test
+    fun aPartialManifestIsMarkedAsPartialInTheReport() {
+        val read = TestFixtures.manifestRead(
+            packageName = PlatformPrincipals.PCS,
+            components = listOf(TestFixtures.pccComponent()),
+        )
+        val partial = dev.shockstruck.gemininano.model.ManifestReadOutcome.Partial(
+            PlatformPrincipals.PCS,
+            read.facts,
+        )
+        val report = FullDiagnosticsReportBuilder().build(
+            input().copy(
+                manifests = listOf(
+                    ManifestEvidenceSnapshot(PlatformPrincipals.PCS, partial),
+                ),
+            ),
+        )
+        val json = JSONObject(report.json)
+        val exported = json.getJSONArray("manifests").getJSONObject(0)
+        assertTrue(exported.getBoolean("partial"))
+        assertFalse(exported.getBoolean("complete"))
+        assertTrue(report.text.contains("partial read: absence cannot be claimed"))
+        assertTrue(report.text.contains("service com.example.PccService privateComputeCore=TRUE"))
     }
 
 }

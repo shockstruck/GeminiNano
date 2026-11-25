@@ -74,8 +74,8 @@ data class ClassifierMessage(
 )
 
 /**
- * The installed-manifest facts one principal contributed, kept as the Stage 6 reader
- * produced them. A manifest declaration is never promoted to a runtime UID here.
+ * The installed-manifest facts one principal contributed, kept as the installed-manifest
+ * reader produced them. A manifest declaration is never promoted to a runtime UID here.
  */
 data class ManifestEvidenceSnapshot(
     val requestedPackage: String,
@@ -93,6 +93,16 @@ data class ManifestEvidenceSnapshot(
         }
 
     val complete: Boolean get() = outcome is ManifestReadOutcome.Read
+
+    val partial: Boolean get() = outcome is ManifestReadOutcome.Partial
+
+    /** The app's declared shared user id, when the read returned it. */
+    val effectiveSharedUserId: String?
+        get() = when (outcome) {
+            is ManifestReadOutcome.Read -> outcome.facts.effectiveSharedUserId
+            is ManifestReadOutcome.Partial -> outcome.facts.effectiveSharedUserId
+            else -> null
+        }
 
     val declaredPackage: String?
         get() = when (outcome) {
@@ -146,7 +156,37 @@ data class ManifestEvidenceSnapshot(
             .flatMap { element -> element.packages }
             .flatMap { it.certificateDigests }
             .distinct()
+
+    val pccComponents: List<dev.shockstruck.gemininano.model.ManifestComponentFacts>
+        get() = pcc.pccComponents.matched
+
+    val associationElements: List<dev.shockstruck.gemininano.model.ManifestElementFacts>
+        get() = pcc.associationPolicy.matched
+
+    val sandboxAttributes: List<dev.shockstruck.gemininano.model.ManifestSandboxAttributeFacts>
+        get() = pcc.otherSandboxAttributes.matched
+
+    /**
+     * True only when every matched association element returned at least one package
+     * entry and every entry has a readable name. A policy with a missing name is not
+     * used to claim a mismatch.
+     */
+    val associationNamesComplete: Boolean
+        get() {
+            val elements = associationElements
+            if (elements.isEmpty()) return false
+            return elements.all { element ->
+                element.packages.isNotEmpty() && element.packages.all { !it.name.isNullOrBlank() }
+            }
+        }
 }
+
+/** The raw `android:privateComputeCore` attribute a component carries, when readable. */
+fun dev.shockstruck.gemininano.model.ManifestComponentFacts
+    .privateComputeCoreAttribute(): dev.shockstruck.gemininano.model.ManifestAttributeFacts? =
+    matchingAttributes.firstOrNull {
+        it.name.substringAfterLast(':') == "privateComputeCore"
+    }
 
 /** Everything the classifier may use; every member is already an observed fact. */
 data class ClassifierInput(
@@ -166,30 +206,40 @@ data class ClassifierInput(
 /**
  * Pure six-way provisioning-failure classifier.
  *
- * A class is selected only when an observation separates it from the others:
+ * A class is selected only when an observation holds for every caller, or when the
+ * message itself names the failure:
  *
- * - a message that itself names the missing configuration, the NPU, a remote
- *   rejection or model/feature registration;
- * - a gRPC bind row whose outcome distinguishes PCS initialization (null binding,
- *   timeout, binding died, disabled component) from PCS authorization
- *   (`SecurityException`, not exported);
- * - the installed PCS manifest's association policy naming a different AICore package
- *   than the one installed.
+ * - a message whose same clause names the missing configuration, an NPU denial, a
+ *   remote rejection or model/feature registration;
+ * - the installed PCS gRPC service is declared but not effectively enabled
+ *   (initialization), or declared but not exported (authorization, unless PCS and
+ *   AICore share a UID);
+ * - a complete installed PCS manifest whose association policy names AICore packages
+ *   other than the visible installed AICore package.
  *
  * Everything else is [ProvisioningFailureClass.INDETERMINATE] naming the candidates and
  * the observation that would separate them. In particular:
  *
+ * - this app's own bind outcomes are evidence only. PCS's policy lists AICore and not
+ *   this app, so a `SecurityException` is expected on a healthy device; a timeout looks
+ *   like a slow cold start; a null binding or a died binding, and the "no caller check"
+ *   reading, come from a source mirror rather than this PCS;
  * - a 606/UNAVAILABLE pattern alone never selects a class: Google's documentation gives
  *   configuration-not-downloaded and an unlocked bootloader as 606 causes and leaves
- *   UNAVAILABLE undifferentiated, and the July 2025 PCS gate that could refuse the
- *   manifest was read in a source mirror, not on the phone;
+ *   UNAVAILABLE undifferentiated, and the July 2025 public PCS dump that refuses the
+ *   manifest was not read on the phone;
  * - `READ_DEVICE_CONFIG` denied supports but does not prove the July 2025 gate; granted
  *   does not refute it, because an unwritten DeviceConfig namespace leaves the same
  *   default;
  * - a denied NPU, on-device-intelligence or virtual-machine permission is never
- *   evidence for NPU access restrictions;
+ *   evidence for NPU access restrictions; a message must name the NPU and a denial,
+ *   refusal or failed access;
+ * - a local "not eligible" message without a server, remote or backend source is a
+ *   candidate only;
  * - a null binding of `GenAiInferenceService` is never used: only the gRPC row counts,
  *   and this app's own bind never stands in for AICore's access;
+ * - a generation that succeeded conflicts with any selected class and makes the result
+ *   INDETERMINATE;
  * - an empty or disabled PCS network log is not evidence for any class.
  */
 class ProvisioningFailureClassifier {
@@ -219,6 +269,9 @@ class ProvisioningFailureClassifier {
         evidence += featurePatternEvidence(input)
         evidence += systemFeatureEvidence(input)
         evidence += messageEvidence(input.messages)
+
+        val successes = successEvidence(input)
+        evidence += successes
 
         val supporters = linkedMapOf<ProvisioningFailureClass, MutableList<String>>()
         fun support(failureClass: ProvisioningFailureClass, why: String) {
@@ -251,24 +304,49 @@ class ProvisioningFailureClassifier {
         }
         grpc?.let { result ->
             when (result.outcome) {
-                PcsBindOutcome.NULL_BINDING,
-                PcsBindOutcome.TIMEOUT,
-                PcsBindOutcome.BINDING_DIED,
-                PcsBindOutcome.NOT_ENABLED,
-                -> support(
+                PcsBindOutcome.NOT_ENABLED -> support(
                     ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
-                    "the gRPC bind row observed ${result.outcome.label} for this app " +
-                        "(${result.elapsedMillis} ms); the service did not become usable",
+                    "the installed PCS declares the gRPC service but it is not effectively " +
+                        "enabled; that holds for every caller, not only this app",
                 )
 
-                PcsBindOutcome.SECURITY_EXCEPTION,
-                PcsBindOutcome.NOT_EXPORTED,
-                -> support(
-                    ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
-                    "the gRPC bind row observed ${result.outcome.label}: " +
-                        (result.exceptionMessage ?: "the component is not exported to other apps"),
-                )
+                PcsBindOutcome.NOT_EXPORTED -> {
+                    val sharing = uidSharing(pcsManifest, aicoreManifest)
+                    evidence += ClassifierEvidence(
+                        statement = "The installed PCS declares the gRPC service but it is not " +
+                            "exported; PCS and AICore UID sharing: ${sharing.label}." +
+                            when (sharing) {
+                                UidSharing.SAME ->
+                                    " Within a shared UID an unexported component remains " +
+                                        "reachable to AICore and is not a blocker."
+                                UidSharing.DIFFERENT ->
+                                    " Different UIDs mean every other app, including AICore, is " +
+                                        "refused by the component's export setting."
+                                UidSharing.UNKNOWN ->
+                                    " UID sharing is not established, so the unexported component " +
+                                        "may still be reachable within a shared UID."
+                            },
+                        strength = EvidenceStrength.INFERRED,
+                        source = "installed-manifest reader",
+                    )
+                    when (sharing) {
+                        UidSharing.SAME -> Unit
+                        UidSharing.DIFFERENT -> support(
+                            ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
+                            "the installed PCS declares the gRPC service but it is not exported, " +
+                                "and PCS and AICore have different UIDs; that holds for every caller",
+                        )
 
+                        UidSharing.UNKNOWN -> support(
+                            ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
+                            "the installed PCS declares the gRPC service but it is not exported; " +
+                                "PCS and AICore UID sharing is not established, so an unexported " +
+                                "component may still be reachable within a shared UID",
+                        )
+                    }
+                }
+
+                // This app's own bind outcome is evidence only, never a selection.
                 else -> Unit
             }
         }
@@ -278,7 +356,12 @@ class ProvisioningFailureClassifier {
 
         val supported = supporters.keys.toList()
         return when {
-            supported.size == 1 -> selected(supported.single(), supporters.getValue(supported.single()), evidence, input, grpc)
+            supported.isNotEmpty() && successes.isNotEmpty() ->
+                conflictingWithSuccess(supported, supporters, evidence)
+
+            supported.size == 1 ->
+                selected(supported.single(), supporters.getValue(supported.single()), evidence, input, grpc)
+
             supported.size > 1 -> conflicting(supported, supporters, evidence)
             else -> indeterminate(input, evidence, grpc)
         }
@@ -303,11 +386,12 @@ class ProvisioningFailureClassifier {
                         "restart the phone, probe again; persistent 606 moves the cause to the " +
                         "manifest/feature gate.")
                 ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE ->
-                    append(". The result belongs to this app's own gRPC bind and does not by " +
-                        "itself describe AICore's access.")
+                    append(". The selected observation holds for every caller; this app's own " +
+                        "failed bind is not used as the selection.")
                 ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE ->
-                    append(". The result is this app's bind or the installed PCS association " +
-                        "policy; AICore's own access is not established by either.")
+                    append(". The selected observation holds for every caller unless PCS and " +
+                        "AICore share a UID; this app's own failed bind is not used as the " +
+                        "selection.")
                 ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION ->
                     append(". The message is the only remote-side observation; no request was " +
                         "sent by this app.")
@@ -329,6 +413,40 @@ class ProvisioningFailureClassifier {
             ),
             refutations = refutations(failureClass),
             nextObservation = next,
+        )
+    }
+
+    private fun conflictingWithSuccess(
+        supported: List<ProvisioningFailureClass>,
+        supporters: Map<ProvisioningFailureClass, List<String>>,
+        evidence: List<ClassifierEvidence>,
+    ): ProvisioningClassification {
+        val names = supported.joinToString { it.label }
+        val candidates = supported.map { failureClass ->
+            ClassifierCandidate(
+                failureClass = failureClass,
+                why = supporters.getValue(failureClass).joinToString("; ") +
+                    "; a generation succeeded, which conflicts with a class asserted for the " +
+                    "same path",
+                missingObservation = "a repeated failure on the same path with no successful " +
+                    "generation, or an explanation of which path succeeded",
+            )
+        }
+        return ProvisioningClassification(
+            result = ProvisioningFailureClass.INDETERMINATE,
+            summary = "INDETERMINATE — observed evidence supports $names, but a generation " +
+                "succeeded, and the app has no observation that reconciles the success with the " +
+                "failure class.",
+            evidence = evidence,
+            refutations = listOf(
+                "A successful generation is direct evidence that the tested path is provisioned; " +
+                    "it conflicts with any selected failure class.",
+                "A repeated failure on the same path with no successful generation would remove " +
+                    "the conflict.",
+            ),
+            candidates = candidates,
+            nextObservation = "Repeat the failing probe and the succeeding generation separately " +
+                "and export again; the export keeps both observations with their sources.",
         )
     }
 
@@ -367,8 +485,8 @@ class ProvisioningFailureClassifier {
     ): ProvisioningClassification {
         val observed606 = observes606(input)
         val observedUnavailable = observesUnavailable(input)
-        val observedSuccess = observesSuccessfulGeneration(input)
-        if (!observed606 && !observedUnavailable && observedSuccess) {
+        val successes = successEvidence(input)
+        if (!observed606 && !observedUnavailable && successes.isNotEmpty()) {
             return ProvisioningClassification(
                 result = ProvisioningFailureClass.INDETERMINATE,
                 summary = "No failure signature is present: at least one generation succeeded, " +
@@ -380,56 +498,131 @@ class ProvisioningFailureClassifier {
                 ),
             )
         }
-        val candidates = mutableListOf<ClassifierCandidate>()
+        val candidates = linkedMapOf<ProvisioningFailureClass, ClassifierCandidate>()
+        fun candidate(
+            failureClass: ProvisioningFailureClass,
+            why: String,
+            missingObservation: String,
+        ) {
+            val existing = candidates[failureClass]
+            candidates[failureClass] = if (existing == null) {
+                ClassifierCandidate(failureClass, why, missingObservation)
+            } else {
+                existing.copy(
+                    why = existing.why + " " + why,
+                    missingObservation = existing.missingObservation + " " + missingObservation,
+                )
+            }
+        }
+
         if (observed606 || observedUnavailable) {
-            candidates += ClassifierCandidate(
-                failureClass = ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
-                why = "606 is Google's documented configuration-not-downloaded signature" +
+            candidate(
+                ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+                "606 is Google's documented configuration-not-downloaded signature" +
                     (if (observedUnavailable) " and at least one feature reported UNAVAILABLE" else ""),
-                missingObservation = "a positive observation that AICore's feature store lacks the " +
-                    "entry — a PCS GetManifestConfig response or an AICore message naming configuration",
+                "a positive observation that AICore's feature store lacks the entry — a PCS " +
+                    "GetManifestConfig response or an AICore message naming configuration",
             )
-            candidates += ClassifierCandidate(
-                failureClass = ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
-                why = "PCS refuses GetManifestConfig with \"feature disabled\" in the July 2025 " +
-                    "source mirror; READ_DEVICE_CONFIG denied supports that gate but does not " +
+            candidate(
+                ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
+                "PCS refuses GetManifestConfig with \"feature disabled\" in the July 2025 " +
+                    "public PCS dump; READ_DEVICE_CONFIG denied supports that gate but does not " +
                     "prove it, and granted does not refute it because an unwritten DeviceConfig " +
                     "namespace leaves the default",
-                missingObservation = "the PCS GetManifestConfig response; an ordinary app cannot " +
-                    "send that RPC, so only an AICore-side observation or a public document can " +
-                    "settle it",
+                "the PCS GetManifestConfig response; an ordinary app cannot send that RPC, so " +
+                    "only an AICore-side observation or a public document can settle it",
             )
         }
-        if (grpc?.outcome != PcsBindOutcome.BINDER_RETURNED) {
-            candidates += ClassifierCandidate(
-                failureClass = ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
-                why = "no gRPC bind result establishes PCS reachability for this app" +
+        when (grpc?.outcome) {
+            null, PcsBindOutcome.NOT_RUN, PcsBindOutcome.NOT_READ,
+            PcsBindOutcome.NOT_DECLARED, PcsBindOutcome.ENABLED_UNKNOWN,
+            -> candidate(
+                ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
+                "no gRPC bind result establishes PCS reachability" +
                     (grpc?.let { " (last row: ${it.outcome.label})" } ?: " (bind probe not run)"),
-                missingObservation = "one AstreaGrpcService bind by this app; AICore's own access " +
-                    "is never established by it",
+                "one AstreaGrpcService bind by this app; AICore's own access is never " +
+                    "established by it",
+            )
+
+            PcsBindOutcome.SECURITY_EXCEPTION -> candidate(
+                ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
+                "this app's own gRPC bind threw a SecurityException; PCS's policy lists AICore " +
+                    "and not this app, so this is expected on a healthy device",
+                "AICore's own bind result",
+            )
+
+            PcsBindOutcome.TIMEOUT -> candidate(
+                ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
+                "this app's own gRPC bind timed out; a slow cold start looks the same",
+                "AICore's own bind result, or a completed PCS response",
+            )
+
+            PcsBindOutcome.REQUIRES_PERMISSION -> candidate(
+                ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
+                "the gRPC service declares a binding permission this app does not hold; that " +
+                    "says nothing about AICore's access",
+                "AICore's own bind result and whether AICore holds the required permission",
+            )
+
+            PcsBindOutcome.NULL_BINDING, PcsBindOutcome.BINDING_DIED -> candidate(
+                ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
+                "this app's own gRPC bind returned ${grpc.outcome.label}; the \"no caller " +
+                    "check\" reading comes from a source mirror, not this PCS",
+                "AICore's own bind result",
+            )
+
+            PcsBindOutcome.BIND_REFUSED, PcsBindOutcome.BIND_ERROR -> {
+                candidate(
+                    ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
+                    "this app's own gRPC bind was ${grpc.outcome.label}; it could be an " +
+                        "initialization or a caller-specific result",
+                    "AICore's own bind result",
+                )
+                candidate(
+                    ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE,
+                    "this app's own gRPC bind was ${grpc.outcome.label}; it could be a " +
+                        "caller-specific refusal",
+                    "AICore's own bind result",
+                )
+            }
+
+            // These two select a class when they are unambiguous; reaching here means a
+            // success conflict or a same-UID case, and neither becomes a candidate.
+            PcsBindOutcome.NOT_ENABLED, PcsBindOutcome.NOT_EXPORTED,
+            PcsBindOutcome.BINDER_RETURNED,
+            -> Unit
+        }
+        if (localEligibilityMessages(input.messages).isNotEmpty()) {
+            candidate(
+                ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+                "an eligibility message has no server, remote or backend wording; local " +
+                    "eligibility reads the same",
+                "a PCS or backend response naming device eligibility",
             )
         }
         if (observed606 || observedUnavailable) {
-            candidates += ClassifierCandidate(
-                failureClass = ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
-                why = "no PCS or backend response was observed, so a remote rejection is neither " +
+            candidate(
+                ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+                "no PCS or backend response was observed, so a remote rejection is neither " +
                     "supported nor excluded",
-                missingObservation = "a PCS or backend response naming device eligibility or a " +
-                    "rejection; the app sends no request",
+                "a PCS or backend response naming device eligibility or a rejection; the app " +
+                    "sends no request",
             )
-            candidates += ClassifierCandidate(
-                failureClass = ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
-                why = "no AICore message naming model or feature registration was observed",
-                missingObservation = "an AICore error naming model or feature registration",
+            candidate(
+                ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
+                "no AICore message naming model or feature registration was observed",
+                "an AICore error naming model or feature registration",
             )
         }
-        candidates += ClassifierCandidate(
-            failureClass = ProvisioningFailureClass.NPU_ACCESS_RESTRICTIONS,
-            why = "no observation names the NPU; a denied ACCESS_NPU_MODEL_MANAGER_API, " +
-                "USE_ON_DEVICE_INTELLIGENCE or MANAGE_VIRTUAL_MACHINE grant is not evidence",
-            missingObservation = "an AICore error naming NPU access; an NPU system-feature name " +
-                "alone is availability, not a restriction",
+        candidate(
+            ProvisioningFailureClass.NPU_ACCESS_RESTRICTIONS,
+            "no observation names the NPU and a denial, refusal or failed access; a denied " +
+                "ACCESS_NPU_MODEL_MANAGER_API, USE_ON_DEVICE_INTELLIGENCE or " +
+                "MANAGE_VIRTUAL_MACHINE grant is not evidence",
+            "an AICore error naming NPU access and a denial; an NPU system-feature name alone " +
+                "is availability, not a restriction",
         )
+        val list = candidates.values.toList()
         return ProvisioningClassification(
             result = ProvisioningFailureClass.INDETERMINATE,
             summary = if (observed606 || observedUnavailable) {
@@ -439,8 +632,8 @@ class ProvisioningFailureClassifier {
                 "INDETERMINATE — no failure signature with a separating observation is present."
             },
             evidence = evidence,
-            refutations = candidates.map { "${it.failureClass.label}: ${it.missingObservation}" },
-            candidates = candidates,
+            refutations = list.map { "${it.failureClass.label}: ${it.missingObservation}" },
+            candidates = list,
             nextObservation = nextObservation(ProvisioningFailureClass.INDETERMINATE, input, grpc),
         )
     }
@@ -451,6 +644,13 @@ class ProvisioningFailureClassifier {
         grpc: PcsBindResult?,
     ): String? = when (failureClass) {
         ProvisioningFailureClass.INDETERMINATE -> when {
+            grpc?.outcome in EVIDENCE_ONLY_BIND_OUTCOMES -> {
+                "This app's own gRPC result (${grpc?.outcome?.label}) is evidence only. The next " +
+                    "separating observation is AICore's own bind or a PCS GetManifestConfig " +
+                    "response, which an ordinary app cannot obtain; update AICore, restart, and " +
+                    "probe again."
+            }
+
             observes606(input) || observesUnavailable(input) -> {
                 if (grpc == null || grpc.outcome == PcsBindOutcome.NOT_RUN) {
                     "Run the Private Compute Services gRPC bind probe, then Run Full Diagnostics " +
@@ -479,8 +679,8 @@ class ProvisioningFailureClassifier {
         )
 
         ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE -> listOf(
-            "A later gRPC bind of the same declared service returning a binder would refute an " +
-                "enduring initialization failure for this app.",
+            "The declared gRPC service becoming effectively enabled and returning a binder would " +
+                "refute a disabled-component initialization failure.",
             "A PCS process that answers within the 3-second window would refute a timeout.",
             "AICore's own bind succeeding would show the failure was specific to this app, not PCS.",
         )
@@ -488,6 +688,7 @@ class ProvisioningFailureClassifier {
         ProvisioningFailureClass.PCS_SERVICE_AUTHORIZATION_FAILURE -> listOf(
             "An AICore-originated bind or RPC succeeding would refute a PCS-wide authorization " +
                 "failure.",
+            "PCS and AICore sharing a UID would refute an unexported-component failure.",
             "An installed PCS association policy that lists the installed AICore package, and a " +
                 "signer digest matching a public-source digest, would refute the component-access " +
                 "branch (this app bundles no public digest set, so it does not perform that comparison).",
@@ -558,6 +759,7 @@ class ProvisioningFailureClassifier {
             }
             ClassifierEvidence(
                 statement = "$role ${packageFacts.packageName}: " +
+                    (if (packageFacts.visible) "visible" else "not visible to this app") + ", " +
                     packageFacts.versionName.orEmpty().ifBlank { "versionName unknown" } +
                     " (versionCode ${packageFacts.versionCode ?: "unknown"}), " +
                     "installer ${packageFacts.installerPackage ?: "unknown"}, " +
@@ -625,7 +827,7 @@ class ProvisioningFailureClassifier {
                         "the flag read. It does not refute a PCS manifest refusal either: an " +
                         "unwritten DeviceConfig namespace leaves the same default false.",
                     strength = EvidenceStrength.INFERRED,
-                    source = "SHOC-6785 / SHOC-6786 review",
+                    source = "July 2025 public PCS dump review",
                 ),
             )
 
@@ -636,7 +838,7 @@ class ProvisioningFailureClassifier {
                         "\"feature disabled\" unless DeviceConfig enables it. That gate was read " +
                         "in a source mirror; the phone's PCS build was not read.",
                     strength = EvidenceStrength.INFERRED,
-                    source = "SHOC-6785",
+                    source = "July 2025 public PCS dump",
                 ),
             )
 
@@ -684,7 +886,7 @@ class ProvisioningFailureClassifier {
                             "and not an OS permission definition; getPermissionInfo failing means " +
                             "\"not defined or not resolvable\", never absent.",
                         strength = EvidenceStrength.OBSERVED,
-                        source = "Stage 6 installed-manifest reader",
+                        source = "installed-manifest reader",
                     ),
                 )
             }
@@ -702,7 +904,7 @@ class ProvisioningFailureClassifier {
                 ),
             )
         }
-        return listOf(
+        val evidence = mutableListOf(
             ClassifierEvidence(
                 statement = "gRPC bind row ${grpc.componentName}: outcome=${grpc.outcome.label}, " +
                     "attempted=${grpc.outcome.attempted}, elapsed=${grpc.elapsedMillis} ms, " +
@@ -716,6 +918,16 @@ class ProvisioningFailureClassifier {
                 source = "PCS bind probe",
             ),
         )
+        if (grpc.outcome == PcsBindOutcome.SECURITY_EXCEPTION) {
+            evidence += ClassifierEvidence(
+                statement = "A SecurityException from this app's own bind is expected even on a " +
+                    "healthy device: PCS's policy lists AICore and not this app. It is evidence " +
+                    "about this app, not about AICore's access.",
+                strength = EvidenceStrength.INFERRED,
+                source = "PCS bind probe",
+            )
+        }
+        return evidence
     }
 
     private fun manifestEvidence(
@@ -741,6 +953,15 @@ class ProvisioningFailureClassifier {
             }
             val policy = snapshot.pcc.associationPolicy
             val packageNames = snapshot.associationPackageNames
+            val componentNames = snapshot.pccComponents.map {
+                "${it.kind}:${it.name ?: "unnamed"}"
+            }
+            val elementNames = snapshot.associationElements.map {
+                it.name + "(" + it.attributes.joinToString(",") { attribute -> attribute.name } + ")"
+            }
+            val sandboxNames = snapshot.sandboxAttributes.map {
+                "${it.componentKind}:${it.componentName ?: "unnamed"}/${it.attribute.name}"
+            }
             ClassifierEvidence(
                 statement = "$role ${snapshot.requestedPackage} manifest: ${snapshot.readLabel} " +
                     "(${snapshot.readDetail}); declaredPackage=${snapshot.declaredPackage ?: "unknown"}; " +
@@ -753,13 +974,18 @@ class ProvisioningFailureClassifier {
                     "; declaredPermissions=${snapshot.declaredPermissions.size}, " +
                     "usesPermissions=${snapshot.usesPermissions.size}; " +
                     "PCC components: ${snapshot.pcc.pccComponents.state.name} " +
-                    "(${snapshot.pcc.pccComponents.reason}); association policy: " +
-                    "${policy.state.name} (${policy.reason})" +
+                    "(${snapshot.pcc.pccComponents.reason})" +
+                    (if (componentNames.isNotEmpty()) " [" + componentNames.joinToString(", ") + "]" else "") +
+                    "; association policy: ${policy.state.name} (${policy.reason})" +
+                    (if (elementNames.isNotEmpty()) " elements=[" + elementNames.joinToString(", ") + "]" else "") +
                     (if (packageNames.isNotEmpty()) " packages=${packageNames.joinToString(",")}" else "") +
-                    ". A declaration is not a runtime PCC UID; no signer digest is compared " +
-                    "because no public-source digest set is bundled.",
+                    (if (sandboxNames.isNotEmpty()) " sandbox=[" + sandboxNames.joinToString(", ") + "]" else "") +
+                    (if (snapshot.partial) " partial read: absence cannot be claimed;" else "") +
+                    ". A declaration is not a runtime PCC UID, and a declared association policy " +
+                    "is not proof of enforcement; no signer digest is compared because no " +
+                    "public-source digest set is bundled.",
                 strength = EvidenceStrength.OBSERVED,
-                source = "Stage 6 installed-manifest reader",
+                source = "installed-manifest reader",
             )
         }
     }
@@ -768,7 +994,10 @@ class ProvisioningFailureClassifier {
         val summarizationCode = input.summarization?.failure?.errorCode
         val prompt606 = input.prompt.filter { it.errorCode == 606 }
         val feature606 = input.features.filter { it.errorCode == 606 }
-        if (summarizationCode == 606 || prompt606.isNotEmpty() || feature606.isNotEmpty()) {
+        val offline606 = input.offline.filter { it.failure?.errorCode == 606 }
+        if (summarizationCode == 606 || prompt606.isNotEmpty() ||
+            feature606.isNotEmpty() || offline606.isNotEmpty()
+        ) {
             add(
                 ClassifierEvidence(
                     statement = "606 observed" +
@@ -783,6 +1012,11 @@ class ProvisioningFailureClassifier {
                             " (features ${feature606.map { it.feature.displayName }
                                 .joinToString(",")}: ids ${feature606.mapNotNull { it.featureId }
                                 .joinToString(",")})"
+                        } else {
+                            ""
+                        }) +
+                        (if (offline606.isNotEmpty()) {
+                            " (offline ${offline606.map { it.feature.displayName }.joinToString(",")})"
                         } else {
                             ""
                         }) +
@@ -813,14 +1047,37 @@ class ProvisioningFailureClassifier {
                 ),
             )
         }
-        if (input.summarization?.failure?.errorCode == 601) {
+        val summarization601 = summarizationCode == 601
+        val prompt601 = input.prompt.filter { it.errorCode == 601 }
+        val feature601 = input.features.filter { it.errorCode == 601 }
+        val offline601 = input.offline.filter { it.failure?.errorCode == 601 }
+        if (summarization601 || prompt601.isNotEmpty() ||
+            feature601.isNotEmpty() || offline601.isNotEmpty()
+        ) {
             add(
                 ClassifierEvidence(
-                    statement = "601 observed: Google documents it as AICore failing to bind. The " +
-                        "message does not name which layer refused, so it is not a separating " +
-                        "observation for the six classes.",
+                    statement = "601 observed" +
+                        (if (summarization601) " (summarization)" else "") +
+                        (if (prompt601.isNotEmpty()) {
+                            " (Prompt ${prompt601.map { it.config.label }.joinToString(",")})"
+                        } else {
+                            ""
+                        }) +
+                        (if (feature601.isNotEmpty()) {
+                            " (features ${feature601.map { it.feature.displayName }.joinToString(",")})"
+                        } else {
+                            ""
+                        }) +
+                        (if (offline601.isNotEmpty()) {
+                            " (offline ${offline601.map { it.feature.displayName }.joinToString(",")})"
+                        } else {
+                            ""
+                        }) +
+                        ": Google documents it as AICore failing to bind. The message does not " +
+                        "name which layer refused, so it is not a separating observation for the " +
+                        "six classes.",
                     strength = EvidenceStrength.OBSERVED,
-                    source = "ML Kit probe",
+                    source = "ML Kit probes",
                 ),
             )
         }
@@ -864,36 +1121,70 @@ class ProvisioningFailureClassifier {
 
     private fun npuMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            NPU_PATTERN.containsMatchIn(message.text) ||
-                message.text.contains("neural processing", ignoreCase = true)
+            val text = message.text.lowercase()
+            val namesNpu = NPU_PATTERN.containsMatchIn(text) ||
+                text.contains("neural processing")
+            namesNpu && DENIAL_WORDS.any { text.contains(it) } && !hasNegatedFailure(text)
         }
 
     private fun configurationMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            val text = message.text.lowercase()
-            (text.contains("configuration") || text.contains("manifest")) &&
-                MISSING_WORDS.any { text.contains(it) }
+            clausesOf(message.text).any { clause ->
+                (clause.contains("configuration") || clause.contains("manifest")) &&
+                    (MISSING_WORDS.any { clause.contains(it) } ||
+                        FAILURE_WORDS.any { clause.contains(it) }) &&
+                    !hasNegatedFailure(clause)
+            }
         }
 
     private fun remoteRejectionMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
             val text = message.text.lowercase()
-            val eligibility = text.contains("not eligible") || text.contains("ineligible")
+            val eligibility = isEligibilityNegative(text) &&
+                REMOTE_SOURCE_WORDS.any { text.contains(it) }
             val rejected = text.contains("reject") &&
-                (text.contains("remote") || text.contains("server") || text.contains("provision"))
+                (REMOTE_SOURCE_WORDS.any { text.contains(it) } || text.contains("provision"))
             val httpAuth = (text.contains("http 401") || text.contains("http 403") ||
                 text.contains("forbidden")) &&
-                (text.contains("server") || text.contains("remote") ||
+                (REMOTE_SOURCE_WORDS.any { text.contains(it) } ||
                     text.contains("download") || text.contains("provision"))
             eligibility || rejected || httpAuth
         }
 
-    private fun registrationMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
+    private fun localEligibilityMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
             val text = message.text.lowercase()
-            (text.contains("regist") && (text.contains("model") || text.contains("feature"))) &&
-                (text.contains("fail") || text.contains("error") || text.contains("unable") ||
-                    text.contains("not registered") || text.contains("could not"))
+            isEligibilityNegative(text) && REMOTE_SOURCE_WORDS.none { text.contains(it) }
+        }
+
+    private fun registrationMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
+        messages.filter { message ->
+            clausesOf(message.text).any { clause ->
+                clause.contains("regist") &&
+                    (clause.contains("model") || clause.contains("feature")) &&
+                    FAILURE_WORDS.any { clause.contains(it) } &&
+                    !hasNegatedFailure(clause) &&
+                    !hasSuccessWording(clause)
+            }
+        }
+
+    private fun isEligibilityNegative(text: String): Boolean =
+        text.contains("not eligible") || text.contains("ineligible")
+
+    private fun clausesOf(text: String): List<String> =
+        text.lowercase()
+            .split(CLAUSE_SPLIT)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+    /** A failure word in a negated clause ("no error", "without failure") is not a failure. */
+    private fun hasNegatedFailure(text: String): Boolean =
+        NEGATED_FAILURE_PHRASES.any { text.contains(it) }
+
+    /** "registration complete" is not a failure even though the clause has "regist". */
+    private fun hasSuccessWording(text: String): Boolean =
+        SUCCESS_WORDS.any { word ->
+            Regex("""\b${Regex.escape(word)}\b""").containsMatchIn(text)
         }
 
     // -- Small pure helpers ------------------------------------------------------------
@@ -909,13 +1200,40 @@ class ProvisioningFailureClassifier {
             input.prompt.any { it.status == FeatureStatusKind.UNAVAILABLE } ||
             input.features.any { it.status == FeatureStatusKind.UNAVAILABLE }
 
-    private fun observesSuccessfulGeneration(input: ClassifierInput): Boolean =
-        input.prompt.any { it.status == FeatureStatusKind.AVAILABLE && it.generationSucceeded } ||
-            input.offline.any { it.outcome == dev.shockstruck.gemininano.model.OfflineInferenceOutcome.SUCCEEDED }
+    /** Any generation the app itself observed to return, with the source that observed it. */
+    private fun successEvidence(input: ClassifierInput): List<ClassifierEvidence> = buildList {
+        input.prompt
+            .filter { it.status == FeatureStatusKind.AVAILABLE && it.generationSucceeded }
+            .forEach { status ->
+                add(
+                    ClassifierEvidence(
+                        statement = "Prompt ${status.config.label} is AVAILABLE and its generation " +
+                            "succeeded" +
+                            (status.baseModelName?.let { " (base model: $it)" } ?: "") + ".",
+                        strength = EvidenceStrength.OBSERVED,
+                        source = "ML Kit Prompt probe",
+                    ),
+                )
+            }
+        input.offline
+            .filter {
+                it.outcome == dev.shockstruck.gemininano.model.OfflineInferenceOutcome.SUCCEEDED
+            }
+            .forEach { result ->
+                add(
+                    ClassifierEvidence(
+                        statement = "Offline inference for ${result.feature.displayName} returned " +
+                            (result.output?.let { "\"$it\"" } ?: "a result") + ".",
+                        strength = EvidenceStrength.OBSERVED,
+                        source = "offline inference matrix",
+                    ),
+                )
+            }
+    }
 
+    /** Only a visible package can be called the installed AICore; no fallback. */
     private fun installedAicorePackage(packages: List<PackageFacts>): String? =
         packages.firstOrNull { it.packageName in AICORE_PACKAGES && it.visible }?.packageName
-            ?: packages.firstOrNull { it.packageName in AICORE_PACKAGES }?.packageName
 
     private fun aicoreReadDeviceConfig(
         matrix: PermissionMatrix?,
@@ -932,15 +1250,18 @@ class ProvisioningFailureClassifier {
             ?: results.firstOrNull { it.componentName in GRPC_SERVICE_NAMES }
 
     /**
-     * A readable PCS association policy that names AICore packages but not the installed
-     * one supports the component-access branch of PCS service authorization failure.
-     * A policy with no package name or no certificate digest is not used.
+     * A complete, fully readable PCS association policy that names AICore packages but not
+     * the visible installed AICore package supports the component-access branch of PCS
+     * service authorization failure. A partial read, an unnamed package entry, or a
+     * non-visible AICore is not used.
      */
     private fun associationPolicyMismatch(
         pcsManifest: ManifestEvidenceSnapshot?,
         aicorePackage: String?,
     ): String? {
         if (pcsManifest == null || aicorePackage == null) return null
+        if (!pcsManifest.complete) return null
+        if (!pcsManifest.associationNamesComplete) return null
         if (pcsManifest.pcc.associationPolicy.state !=
             dev.shockstruck.gemininano.model.PccComponentEvidenceState.DECLARED
         ) {
@@ -948,8 +1269,26 @@ class ProvisioningFailureClassifier {
         }
         val names = pcsManifest.associationPackageNames
         if (names.isEmpty() || aicorePackage in names) return null
-        return "the installed PCS manifest association policy names " +
-            names.joinToString(", ") + ", but the installed AICore package is $aicorePackage"
+        return "the complete installed PCS manifest association policy names " +
+            names.joinToString(", ") + ", but the visible installed AICore package is " +
+            aicorePackage + "; a declared policy is not proof of enforcement"
+    }
+
+    private fun uidSharing(
+        pcsManifest: ManifestEvidenceSnapshot?,
+        aicoreManifest: ManifestEvidenceSnapshot?,
+    ): UidSharing {
+        if (pcsManifest?.outcome !is ManifestReadOutcome.Read) return UidSharing.UNKNOWN
+        if (aicoreManifest?.outcome !is ManifestReadOutcome.Read) return UidSharing.UNKNOWN
+        val pcsUid = pcsManifest.effectiveSharedUserId
+        val aicoreUid = aicoreManifest.effectiveSharedUserId
+        return if (pcsUid != null && pcsUid == aicoreUid) UidSharing.SAME else UidSharing.DIFFERENT
+    }
+
+    private enum class UidSharing(val label: String) {
+        SAME("same UID"),
+        DIFFERENT("different UIDs"),
+        UNKNOWN("not established"),
     }
 
     private companion object {
@@ -964,6 +1303,72 @@ class ProvisioningFailureClassifier {
             .toSet()
 
         val NPU_PATTERN = Regex("""\bnpu\b""", RegexOption.IGNORE_CASE)
+
+        /** Outcomes of this app's own bind: evidence and candidates only, never selections. */
+        val EVIDENCE_ONLY_BIND_OUTCOMES = setOf(
+            PcsBindOutcome.SECURITY_EXCEPTION,
+            PcsBindOutcome.TIMEOUT,
+            PcsBindOutcome.NULL_BINDING,
+            PcsBindOutcome.BINDING_DIED,
+            PcsBindOutcome.BIND_REFUSED,
+            PcsBindOutcome.BIND_ERROR,
+        )
+
+        val DENIAL_WORDS = listOf(
+            "denied",
+            "denial",
+            "refused",
+            "refusal",
+            "forbidden",
+            "blocked",
+            "restricted",
+            "not allowed",
+            "unavailable",
+            "cannot",
+            "no access",
+            "fail",
+        )
+
+        val FAILURE_WORDS = listOf(
+            "fail",
+            "error",
+            "unable",
+            "not registered",
+            "could not",
+            "cannot",
+            "refused",
+            "rejected",
+            "missing",
+        )
+
+        val SUCCESS_WORDS = listOf(
+            "complete",
+            "completed",
+            "succeeded",
+            "successfully",
+            "success",
+            "passed",
+        )
+
+        val NEGATED_FAILURE_PHRASES = listOf(
+            "no error",
+            "no failure",
+            "without error",
+            "without failure",
+            "not an error",
+            "not failed",
+            "no errors",
+            "0 errors",
+            "no denial",
+            "no refusal",
+            "no problem",
+        )
+
+        val REMOTE_SOURCE_WORDS = listOf("server", "remote", "backend", "cloud")
+
+        val CLAUSE_SPLIT = Regex(
+            """[;,.!?]|\bbut\b|\bwhile\b|\balthough\b|\bhowever\b|\bthen\b""",
+        )
 
         val NAMED_PERMISSIONS = listOf(
             "PROVIDE_ON_DEVICE_INTELLIGENCE",

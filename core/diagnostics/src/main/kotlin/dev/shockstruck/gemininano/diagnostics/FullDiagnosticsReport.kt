@@ -39,7 +39,7 @@ data class FullDiagnosticsInput(
     /** `getSystemAvailableFeatures` names relevant to NPU, AI, virtualization or PCC. */
     val systemFeatures: List<String> = emptyList(),
     val systemFeatureReadError: String? = null,
-    /** Installed-manifest evidence from the Stage 6 reader. */
+    /** Installed-manifest evidence from the installed-manifest reader. */
     val manifests: List<ManifestEvidenceSnapshot> = emptyList(),
     /** The pure classifier result computed from exactly the evidence in this report. */
     val classification: ProvisioningClassification? = null,
@@ -342,7 +342,7 @@ class FullDiagnosticsReportBuilder {
         }
 
         out.appendLine()
-        out.append("== Installed manifest evidence (Stage 6 reader) ==\n")
+        out.append("== Installed manifest evidence ==\n")
         if (input.manifests.isEmpty()) {
             out.append("not read\n")
         } else {
@@ -351,6 +351,7 @@ class FullDiagnosticsReportBuilder {
                     .append(" (").append(snapshot.readDetail).append(')')
                     .append(" | declaredPackage=").append(snapshot.declaredPackage ?: "unknown")
                     .append(" | complete=").append(snapshot.complete)
+                    .append(" | partial=").append(snapshot.partial)
                     .append(" | signerSha256=")
                     .append(
                         if (snapshot.signerSha256.isEmpty()) {
@@ -375,26 +376,63 @@ class FullDiagnosticsReportBuilder {
                     .filter { name -> NAMED_MANIFEST_PERMISSIONS.any { name == it || name.endsWith(".$it") } }
                     .distinct()
                     .forEach { name -> out.append("  uses-permission: ").append(name).append('\n') }
+                if (snapshot.partial) {
+                    out.append("  partial read: absence cannot be claimed\n")
+                }
                 out.append("  pccComponents: ")
                     .append(snapshot.pcc.pccComponents.state.name)
                     .append(" (").append(snapshot.pcc.pccComponents.reason).append(")\n")
+                snapshot.pccComponents.forEach { component ->
+                    val attribute = component.privateComputeCoreAttribute()
+                    out.append("    ").append(component.kind)
+                        .append(" ").append(component.name ?: "unnamed")
+                        .append(" privateComputeCore=").append(component.privateComputeCore.name)
+                        .append(" rawValue=").append(attribute?.rawValue ?: "not read")
+                        .append(" typedValue=").append(attribute?.typedValue ?: "not read")
+                        .append('\n')
+                }
                 out.append("  associationPolicy: ")
                     .append(snapshot.pcc.associationPolicy.state.name)
-                    .append(" (").append(snapshot.pcc.associationPolicy.reason).append(")")
-                if (snapshot.associationPackageNames.isNotEmpty()) {
-                    out.append(" packages=")
-                        .append(snapshot.associationPackageNames.joinToString(","))
+                    .append(" (").append(snapshot.pcc.associationPolicy.reason).append(")\n")
+                snapshot.associationElements.forEach { element ->
+                    out.append("    element ").append(element.name)
+                    if (element.attributes.isNotEmpty()) {
+                        out.append(" attributes=[")
+                            .append(
+                                element.attributes.joinToString("; ") {
+                                    "${it.name}=${it.rawValue ?: it.typedValue}"
+                                },
+                            )
+                            .append("]")
+                    }
+                    if (element.packages.isNotEmpty()) {
+                        out.append(" packages=[")
+                            .append(
+                                element.packages.joinToString("; ") {
+                                    "${it.name ?: "unnamed"}:${it.certificateDigests.joinToString(",")}"
+                                },
+                            )
+                            .append("]")
+                    }
+                    out.append('\n')
                 }
                 if (snapshot.associationCertificateDigests.isNotEmpty()) {
-                    out.append(" digests=")
+                    out.append("    digests=")
                         .append(snapshot.associationCertificateDigests.joinToString(","))
+                        .append('\n')
                 }
-                out.append('\n')
                 out.append("  otherSandboxAttributes: ")
                     .append(snapshot.pcc.otherSandboxAttributes.state.name)
                     .append(" (").append(snapshot.pcc.otherSandboxAttributes.reason).append(")\n")
+                snapshot.sandboxAttributes.forEach { sandbox ->
+                    out.append("    ").append(sandbox.componentKind)
+                        .append(" ").append(sandbox.componentName ?: "unnamed")
+                        .append(" ").append(sandbox.attribute.name)
+                        .append("=").append(sandbox.attribute.rawValue ?: sandbox.attribute.typedValue)
+                        .append('\n')
+                }
             }
-            out.append("A manifest declaration is not a runtime PCC UID; no signer digest is compared because no public-source digest set is bundled.\n")
+            out.append("A manifest declaration is not a runtime PCC UID, and a declared association policy is not proof of enforcement; no signer digest is compared because no public-source digest set is bundled.\n")
         }
 
         out.appendLine()
@@ -830,6 +868,7 @@ class FullDiagnosticsReportBuilder {
         "\"readDetail\": " + quote(snapshot.readDetail) + ", " +
         "\"declaredPackage\": " + quote(snapshot.declaredPackage) + ", " +
         "\"complete\": " + snapshot.complete + ", " +
+        "\"partial\": " + snapshot.partial + ", " +
         "\"signerSha256\": " + array(snapshot.signerSha256) { quote(it) } + ", " +
         "\"declaredPermissions\": " + array(snapshot.declaredPermissions) {
             "{" +
@@ -849,10 +888,32 @@ class FullDiagnosticsReportBuilder {
             snapshot.pcc.pccComponents.state.name,
             snapshot.pcc.pccComponents.reason,
             snapshot.pcc.pccComponents.matched.size,
+            extra = "\"components\": " + array(snapshot.pccComponents) { component ->
+                val attribute = component.privateComputeCoreAttribute()
+                "{" +
+                    "\"kind\": " + quote(component.kind) + ", " +
+                    "\"name\": " + quote(component.name) + ", " +
+                    "\"privateComputeCore\": " + quote(component.privateComputeCore.name) + ", " +
+                    "\"rawValue\": " + quote(attribute?.rawValue) + ", " +
+                    "\"typedValue\": " + quote(attribute?.typedValue) +
+                    "}"
+            },
         ) + ", " +
         "\"associationPolicy\": {" +
         "\"state\": " + quote(snapshot.pcc.associationPolicy.state.name) + ", " +
         "\"reason\": " + quote(snapshot.pcc.associationPolicy.reason) + ", " +
+        "\"elements\": " + array(snapshot.associationElements) { element ->
+            "{" +
+                "\"name\": " + quote(element.name) + ", " +
+                "\"attributes\": " + array(element.attributes) { attributeJson(it) } + ", " +
+                "\"packages\": " + array(element.packages) {
+                    "{" +
+                        "\"name\": " + quote(it.name) + ", " +
+                        "\"certificateDigests\": " + array(it.certificateDigests) { digest -> quote(digest) } +
+                        "}"
+                } +
+                "}"
+        } + ", " +
         "\"packages\": " + array(
             snapshot.pcc.associationPolicy.matched.flatMap { it.packages },
         ) {
@@ -866,13 +927,37 @@ class FullDiagnosticsReportBuilder {
             snapshot.pcc.otherSandboxAttributes.state.name,
             snapshot.pcc.otherSandboxAttributes.reason,
             snapshot.pcc.otherSandboxAttributes.matched.size,
+            extra = "\"attributes\": " + array(snapshot.sandboxAttributes) {
+                "{" +
+                    "\"componentKind\": " + quote(it.componentKind) + ", " +
+                    "\"componentName\": " + quote(it.componentName) + ", " +
+                    "\"attribute\": " + attributeJson(it.attribute) +
+                    "}"
+            },
         ) +
         "}"
 
-    private fun pccStateJson(state: String, reason: String, matched: Int): String = "{" +
+    private fun attributeJson(
+        attribute: dev.shockstruck.gemininano.model.ManifestAttributeFacts,
+    ): String = "{" +
+        "\"name\": " + quote(attribute.name) + ", " +
+        "\"namespace\": " + quote(attribute.namespace) + ", " +
+        "\"resourceIdHex\": " + quote(attribute.resourceIdHex) + ", " +
+        "\"rawValue\": " + quote(attribute.rawValue) + ", " +
+        "\"typedValue\": " + quote(attribute.typedValue) + ", " +
+        "\"dataType\": " + quote(attribute.dataType) +
+        "}"
+
+    private fun pccStateJson(
+        state: String,
+        reason: String,
+        matched: Int,
+        extra: String? = null,
+    ): String = "{" +
         "\"state\": " + quote(state) + ", " +
         "\"reason\": " + quote(reason) + ", " +
         "\"matchedCount\": " + matched +
+        (extra?.let { ", " + it } ?: "") +
         "}"
 
     private fun classificationJson(classification: ProvisioningClassification?): String {

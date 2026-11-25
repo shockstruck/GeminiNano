@@ -105,7 +105,7 @@ updated.
    probe; the PCS surface and launch targets; every planned bind row — `NOT RUN` if it was not
    attempted — with bind flag, outcome, guarded descriptor, binder label, exception, elapsed time
    and unbind count (including `descriptorTimedOut`); the launch results; the installed-manifest
-   facts for AICore, PCS and ASI as the Stage 6 reader decoded them (declared package, signer
+   facts for AICore, PCS and ASI as the installed-manifest reader decoded them (declared package, signer
    SHA-256, declared and used permissions, `android:privateComputeCore` components, the
    component-access/association policy and its package names and certificate digests, and
    isolated/process attributes); the
@@ -141,15 +141,30 @@ every evidence item marked `observed` or `inferred`, the observations that would
 and for INDETERMINATE the still-open candidates each with its missing observation.
 
 - **INDETERMINATE is the expected answer on this phone.** `606` is documented as
-  configuration-not-downloaded or an unlocked bootloader, and the July 2025 PCS source mirror
+  configuration-not-downloaded or an unlocked bootloader, and the July 2025 public PCS dump
   that refuses `GetManifestConfig` with “feature disabled” was not read on this build. The
   app cannot send that RPC, so missing feature configuration and PCS service authorization
   failure stay candidates. The JSON export names both.
 - **`READ_DEVICE_CONFIG` denied supports but does not prove that PCS gate**, and granted does
   not refute it: an unwritten DeviceConfig namespace leaves the same default.
+- **This app's own bind outcomes are evidence, not selections.** PCS's policy lists AICore and
+  not this app, so a `SecurityException` here is expected on a healthy device; a timeout looks
+  like a slow cold start; a null binding, a died binding and the “no caller check” reading come
+  from a source mirror rather than this PCS. Only a gRPC service the installed PCS declares but
+  does **not effectively enable** selects PCS initialization failure; only a service declared
+  but **not exported** selects PCS service authorization failure, and only when PCS and AICore
+  are not established to share a UID. Everything else, including `BIND_REFUSED` and
+  `BIND_ERROR`, stays a candidate.
+- **A declared association policy is not proof of enforcement.** A mismatch selects only from a
+  complete PCS manifest whose matched policy elements all returned readable package names and a
+  visible installed AICore package.
 - **NPU access restrictions are never selected from a denied `ACCESS_NPU_MODEL_MANAGER_API`,
-  `USE_ON_DEVICE_INTELLIGENCE` or `MANAGE_VIRTUAL_MACHINE` grant.** The class needs a message
-  that names the NPU; none exists in today's evidence.
+  `USE_ON_DEVICE_INTELLIGENCE` or `MANAGE_VIRTUAL_MACHINE` grant.** The same message must name
+  the NPU **and** a denial, refusal or failed access; an NPU name alone is evidence only.
+- **A local “not eligible” message without a server, remote or backend source is a candidate**,
+  because a local eligibility read looks the same.
+- **A generation that succeeded conflicts with any selected class** and makes the result
+  `INDETERMINATE`; the success is listed as evidence.
 - **The classifier uses only the gRPC bind row** (`AstreaGrpcService`/`PcsGrpcService`). A
   null binding of `GenAiInferenceService` is not evidence, the app's own bind never stands in
   for AICore's, and an empty or disabled PCS network log is not evidence for any class.

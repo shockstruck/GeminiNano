@@ -246,7 +246,7 @@ class ProvisioningDiagnosticsTest {
                 binds = listOf(
                     TestFixtures.bindResult(
                         componentName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService",
-                        outcome = PcsBindOutcome.NULL_BINDING,
+                        outcome = PcsBindOutcome.NOT_ENABLED,
                     ),
                 ),
             ),
