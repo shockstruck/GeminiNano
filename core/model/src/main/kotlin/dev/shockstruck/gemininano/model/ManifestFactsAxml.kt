@@ -181,8 +181,7 @@ class ManifestFactsAxmlDecoder(
         val rawIndex = u32(at + 8)
         val dataType = u8(at + 15)
         val data = u32(at + 16)
-        val name = stringOrNull(nameIndex)
-            ?: throw ManifestFormatException("attribute name index $nameIndex is missing")
+        val name = stringOrNull(nameIndex) ?: ""
         val raw = stringOrNull(rawIndex)
         return ManifestAttribute(
             name = name,

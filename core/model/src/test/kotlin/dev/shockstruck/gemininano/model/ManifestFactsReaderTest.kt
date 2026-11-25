@@ -176,7 +176,7 @@ class ManifestFactsReaderTest {
     }
 
     @Test
-    fun componentAccessElementRecordsAttributesTextAndCertificateDigest() {
+    fun componentAccessElementRecordsAttributesTextPackagesAndCertificateDigest() {
         val digest = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:" +
             "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
         val events = manifestEvents(
@@ -201,6 +201,10 @@ class ManifestFactsReaderTest {
         assertEquals("allow-component-access", access.name)
         assertEquals("0x01010000", access.attributes.single().resourceIdHex)
         assertEquals(listOf(digest), access.certificateDigests)
+        val packageEntry = access.packages.single()
+        assertEquals("com.example.target", packageEntry.name)
+        assertEquals(listOf(digest), packageEntry.certificateDigests)
+        assertEquals(2, packageEntry.attributes.size)
 
         val association = delivered.facts.pccElements[1]
         assertEquals(listOf("contact", "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"), association.textValues)
@@ -220,7 +224,7 @@ class ManifestFactsReaderTest {
                     attribute("exported", "true", raw = null, dataType = "boolean"),
                     attribute("permission", "$PACKAGE.PRIVILEGED"),
                     attribute("process", ":fixture"),
-                    attribute("isolatedProcess", "true", raw = null, dataType = "boolean"),
+                    attribute("isolatedProcess", "false", raw = null, dataType = "boolean"),
                 ),
                 end("service"),
             ),
@@ -232,7 +236,176 @@ class ManifestFactsReaderTest {
         assertEquals(true, component.exported)
         assertEquals("$PACKAGE.PRIVILEGED", component.permission)
         assertEquals(":fixture", component.process)
-        assertEquals(listOf("process", "isolatedProcess"), component.matchingAttributes.map { it.name })
+        assertEquals(
+            setOf("process", "isolatedProcess"),
+            component.matchingAttributes.map { it.name }.toSet(),
+        )
+        assertEquals(ManifestBooleanValue.ABSENT, component.privateComputeCore)
+    }
+
+    @Test
+    fun intentFiltersAreRecordedOnServicesAndActivities() {
+        val astreaService = "com.google.android.apps.miphone.astrea.services.AstreaService"
+        val events = manifestEvents(
+            listOf(
+                start("service", attribute("name", astreaService)),
+                start("intent-filter", attribute("priority", "10", raw = null, dataType = "int-dec")),
+                start("action", attribute("name", "com.google.android.as.oss.action.START")),
+                end("action"),
+                start("category", attribute("name", "android.intent.category.DEFAULT")),
+                end("category"),
+                start("data", attribute("scheme", "content"), attribute("host", "aicore")),
+                end("data"),
+                end("intent-filter"),
+                end("service"),
+                start("activity", attribute("name", ".MainActivity")),
+                start("intent-filter"),
+                start("action", attribute("name", "com.google.android.aicore.action.PROBE")),
+                end("action"),
+                end("intent-filter"),
+                end("activity"),
+            ),
+        )
+
+        val components = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.components
+        val service = components.single { it.kind == "service" }
+        assertEquals(astreaService, service.name)
+        assertTrue(service.declaresIntentFilter)
+        val serviceFilter = service.intentFilters.single()
+        assertEquals(listOf("com.google.android.as.oss.action.START"), serviceFilter.actions)
+        assertEquals(listOf("android.intent.category.DEFAULT"), serviceFilter.categories)
+        assertEquals(listOf("content"), serviceFilter.dataSchemes)
+        assertEquals(listOf("aicore"), serviceFilter.dataHosts)
+
+        val activity = components.single { it.kind == "activity" }
+        assertEquals(listOf("com.google.android.aicore.action.PROBE"), activity.intentFilters.single().actions)
+    }
+
+    @Test
+    fun queriesPackagesAndIntentActionsAreRecorded() {
+        val events = listOf(
+            start("manifest", attribute("package", PACKAGE, namespace = null)),
+            start("queries"),
+            start("package", attribute("name", "com.google.android.aicore")),
+            end("package"),
+            start("package", attribute("name", "com.google.android.as.oss")),
+            end("package"),
+            start("intent"),
+            start("action", attribute("name", "android.intent.action.PROBE")),
+            end("action"),
+            end("intent"),
+            start("provider", attribute("authorities", "dev.shockstruck.provider")),
+            end("provider"),
+            end("queries"),
+            end("manifest"),
+        )
+
+        val queries = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.queries.single()
+        assertEquals(
+            setOf("com.google.android.aicore", "com.google.android.as.oss"),
+            queries.packages.toSet(),
+        )
+        assertEquals(listOf("android.intent.action.PROBE"), queries.intentActions)
+        assertEquals(listOf("dev.shockstruck.provider"), queries.providerAuthorities)
+    }
+
+    @Test
+    fun usesPermissionVariantsRecordNamesAndSdkBounds() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "uses-permission-sdk-23",
+                    attribute("name", "android.permission.READ_LOGS"),
+                    attribute("maxSdkVersion", "28", raw = null, dataType = "int-dec"),
+                    attribute("minSdkVersion", "26", raw = null, dataType = "int-dec"),
+                ),
+                end("uses-permission-sdk-23"),
+            ),
+        )
+
+        val uses = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.usesPermissions.single()
+        assertEquals("android.permission.READ_LOGS", uses.name)
+        assertEquals("28", uses.maxSdkVersion)
+        assertEquals("26", uses.minSdkVersion)
+    }
+
+    @Test
+    fun sharedUserIdIsRecordedFromTheManifest() {
+        val events = listOf(
+            start(
+                "manifest",
+                attribute("package", PACKAGE, namespace = null),
+                attribute("sharedUserId", SHARED_USER),
+            ),
+            end("manifest"),
+        )
+
+        val facts = (read(visible(base(events))) as ManifestReadOutcome.Read).facts
+        assertEquals(listOf(SHARED_USER), facts.declaredSharedUserIds)
+    }
+
+    @Test
+    fun protectionLevelFlagsMatchPermissionInfoTable() {
+        PERMISSION_INFO_FLAGS.forEach { (bit, name) ->
+            val protected = 0x2 or bit
+            val events = manifestEvents(
+                listOf(
+                    start(
+                        "permission",
+                        attribute("name", "flag.$name"),
+                        attribute(
+                            "protectionLevel",
+                            "0x%x".format(protected),
+                            raw = null,
+                            dataType = "int-hex",
+                        ),
+                    ),
+                    end("permission"),
+                ),
+            )
+
+            val permission = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.permissions.single()
+            assertEquals("base for 0x${bit.toString(16)}", "signature", permission.protectionLevelBase)
+            assertEquals("flags for 0x${bit.toString(16)}", listOf(name), permission.protectionLevelFlags)
+            assertNull("unknown bits for 0x${bit.toString(16)}", permission.protectionLevelUnknownBitsHex)
+        }
+    }
+
+    @Test
+    fun protectionLevelInternalIsABaseLevelNotAFlag() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "permission",
+                    attribute("name", "internal.permission"),
+                    attribute("protectionLevel", "4", raw = null, dataType = "int-dec"),
+                ),
+                end("permission"),
+            ),
+        )
+
+        val permission = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.permissions.single()
+        assertEquals("internal", permission.protectionLevelBase)
+        assertTrue(permission.protectionLevelFlags.isEmpty())
+        assertNull(permission.protectionLevelUnknownBitsHex)
+    }
+
+    @Test
+    fun protectionLevelUnknownBitsAreKeptAsHex() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "permission",
+                    attribute("name", "unknown.bits"),
+                    attribute("protectionLevel", "0x10000002", raw = null, dataType = "int-hex"),
+                ),
+                end("permission"),
+            ),
+        )
+
+        val permission = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.permissions.single()
+        assertEquals("signature", permission.protectionLevelBase)
+        assertEquals("0x10000000", permission.protectionLevelUnknownBitsHex)
     }
 
     @Test
@@ -263,36 +436,76 @@ class ManifestFactsReaderTest {
     }
 
     @Test
-    fun usesPermissionVariantsRecordNamesAndMaxSdk() {
-        val events = manifestEvents(
-            listOf(
-                start("uses-permission-sdk-23", attribute("name", "android.permission.READ_LOGS"), attribute("maxSdkVersion", "28", raw = null, dataType = "int-dec")),
-                end("uses-permission-sdk-23"),
-            ),
-        )
+    fun privateComputeCoreTrueDeclaresAPccComponentForEveryKind() {
+        COMPONENT_KINDS.forEach { kind ->
+            val events = manifestEvents(
+                listOf(
+                    start(
+                        kind,
+                        attribute("name", ".$kind"),
+                        attribute("privateComputeCore", "true", raw = null, dataType = "boolean"),
+                    ),
+                    end(kind),
+                ),
+            )
 
-        val uses = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.usesPermissions.single()
-        assertEquals("android.permission.READ_LOGS", uses.name)
-        assertEquals("28", uses.maxSdkVersion)
+            val evidence = pccComponentEvidence(read(visible(base(events))))
+            assertEquals("$kind true", PccComponentEvidenceState.DECLARED, evidence.pccComponents.state)
+            assertEquals(kind, evidence.pccComponents.matched.single().kind)
+        }
     }
 
     @Test
-    fun sharedUserIdIsRecordedFromTheManifest() {
-        val events = listOf(
-            start(
-                "manifest",
-                attribute("package", PACKAGE, namespace = null),
-                attribute("sharedUserId", SHARED_USER),
-            ),
-            end("manifest"),
-        )
+    fun privateComputeCoreFalseIsNotADeclarationForEveryKind() {
+        COMPONENT_KINDS.forEach { kind ->
+            val events = manifestEvents(
+                listOf(
+                    start(
+                        kind,
+                        attribute("name", ".$kind"),
+                        attribute("privateComputeCore", "false", raw = null, dataType = "boolean"),
+                    ),
+                    end(kind),
+                ),
+            )
 
-        val facts = (read(visible(base(events))) as ManifestReadOutcome.Read).facts
-        assertEquals(listOf(SHARED_USER), facts.declaredSharedUserIds)
+            val evidence = pccComponentEvidence(read(visible(base(events))))
+            assertEquals(
+                "$kind false",
+                PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST,
+                evidence.pccComponents.state,
+            )
+        }
     }
 
     @Test
-    fun pccEvidenceDeclaredWhenComponentAccessElementIsPresent() {
+    fun privateComputeCoreReferenceIsUnresolvedForEveryKind() {
+        COMPONENT_KINDS.forEach { kind ->
+            val events = manifestEvents(
+                listOf(
+                    start(
+                        kind,
+                        attribute("name", ".$kind"),
+                        attribute(
+                            "privateComputeCore",
+                            "@0x7f010001",
+                            raw = null,
+                            dataType = "reference",
+                        ),
+                    ),
+                    end(kind),
+                ),
+            )
+
+            val evidence = pccComponentEvidence(read(visible(base(events))))
+            assertEquals("$kind reference", PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+            assertEquals(ManifestBooleanValue.UNRESOLVED, evidence.pccComponents.matched.firstOrNull()?.privateComputeCore)
+            assertTrue(evidence.pccComponents.reason.contains("unresolved"))
+        }
+    }
+
+    @Test
+    fun componentAccessOnlyManifestIsAssociationEvidenceNotPccComponentEvidence() {
         val events = manifestEvents(
             listOf(
                 start("allow-component-access"),
@@ -303,71 +516,135 @@ class ManifestFactsReaderTest {
         )
 
         val evidence = pccComponentEvidence(read(visible(base(events))))
-        assertEquals(PccComponentEvidenceState.DECLARED, evidence.state)
-        assertEquals("allow-component-access", evidence.matchedElements.single().name)
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.DECLARED, evidence.associationPolicy.state)
+        assertEquals("allow-component-access", evidence.associationPolicy.matched.single().name)
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.otherSandboxAttributes.state)
     }
 
     @Test
-    fun pccEvidenceDeclaredForPccComponentAttribute() {
+    fun isolatedProcessFalseDoesNotDeclareAPccComponent() {
         val events = manifestEvents(
             listOf(
-                start("service", attribute("name", ".PccService"), attribute("pccRole", "provider")),
+                start(
+                    "service",
+                    attribute("name", ".IsolatedService"),
+                    attribute("isolatedProcess", "false", raw = null, dataType = "boolean"),
+                ),
                 end("service"),
             ),
         )
 
         val evidence = pccComponentEvidence(read(visible(base(events))))
-        assertEquals(PccComponentEvidenceState.DECLARED, evidence.state)
-        assertEquals(".PccService", evidence.matchedComponents.single().name)
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.DECLARED, evidence.otherSandboxAttributes.state)
+        assertEquals("isolatedProcess", evidence.otherSandboxAttributes.matched.single().attribute.name)
+    }
+
+    @Test
+    fun processAttributeIsInformationalSandboxEvidenceOnly() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "service",
+                    attribute("name", ".ProcessService"),
+                    attribute("process", ":sandbox"),
+                ),
+                end("service"),
+            ),
+        )
+
+        val evidence = pccComponentEvidence(read(visible(base(events))))
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.DECLARED, evidence.otherSandboxAttributes.state)
+        assertEquals("process", evidence.otherSandboxAttributes.matched.single().attribute.name)
+        assertTrue(evidence.otherSandboxAttributes.reason.contains("informational"))
+    }
+
+    @Test
+    fun unnamedComponentAttributeBlocksNotDeclared() {
+        val unnamed = ManifestAttribute(
+            name = "",
+            namespace = null,
+            resourceId = 0x01010010,
+            rawValue = "true",
+            typedValue = "true",
+            dataType = "boolean",
+        )
+        val events = manifestEvents(
+            listOf(
+                start("service", attribute("name", ".UnnamedAttributeService"), unnamed),
+                end("service"),
+            ),
+        )
+
+        val delivered = read(visible(base(events))) as ManifestReadOutcome.Read
+        val component = delivered.facts.components.single()
+        assertTrue(component.hasUnnamedAttributes)
+        assertEquals("0x01010010", component.unnamedAttributes.single().resourceIdHex)
+        assertEquals("true", component.unnamedAttributes.single().rawValue)
+
+        val evidence = pccComponentEvidence(delivered)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertTrue(evidence.pccComponents.reason.contains("readable name"))
     }
 
     @Test
     fun pccEvidenceNotDeclaredOnlyAfterACompleteRead() {
         val evidence = pccComponentEvidence(read(visible(base())))
 
-        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.state)
-        assertTrue(evidence.reason.contains("completely"))
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.associationPolicy.state)
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.otherSandboxAttributes.state)
     }
 
     @Test
-    fun pccEvidenceUnreadableWhenASplitFailed() {
+    fun everyEvidenceValueIsUnreadableWhenASplitFailed() {
         val unreadable = FakeSource(
             ManifestSourceId("split:config", ManifestApkKind.SPLIT),
             openFailure = ManifestFormatException("no AndroidManifest.xml entry"),
         )
 
         val evidence = pccComponentEvidence(read(visible(base(), unreadable)))
-        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.state)
-        assertTrue(evidence.reason.contains("could not be read"))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.associationPolicy.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.otherSandboxAttributes.state)
+        assertTrue(evidence.pccComponents.reason.contains("could not be read"))
     }
 
     @Test
-    fun pccEvidenceUnreadableWhenPackageIsNotVisible() {
+    fun everyEvidenceValueIsUnreadableWhenPackageIsNotVisible() {
         val evidence = pccComponentEvidence(read(ManifestPackageSources.NotVisible))
-        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.state)
-        assertTrue(evidence.reason.contains("not visible"))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.associationPolicy.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.otherSandboxAttributes.state)
+        assertTrue(evidence.pccComponents.reason.contains("not visible"))
     }
 
     @Test
-    fun pccEvidenceUnreadableWhenManifestReadFailed() {
+    fun everyEvidenceValueIsUnreadableWhenManifestReadFailed() {
         val failing = FakeSource(
             ManifestSourceId("base", ManifestApkKind.BASE),
             openFailure = IllegalStateException("broken apk"),
         )
 
         val evidence = pccComponentEvidence(read(visible(failing)))
-        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.state)
-        assertTrue(evidence.reason.contains("java.lang.IllegalStateException"))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.associationPolicy.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.otherSandboxAttributes.state)
+        assertTrue(evidence.pccComponents.reason.contains("java.lang.IllegalStateException"))
     }
 
     @Test
-    fun pccEvidenceUnreadableWhenDeclaredPackageMismatches() {
+    fun everyEvidenceValueIsUnreadableWhenDeclaredPackageMismatches() {
         val evidence = pccComponentEvidence(
             read(visible(base(manifestEvents(packageName = "com.other.app")))),
         )
 
-        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.state)
-        assertTrue(evidence.reason.contains("com.other.app"))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.associationPolicy.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.otherSandboxAttributes.state)
+        assertTrue(evidence.pccComponents.reason.contains("com.other.app"))
     }
 
     private fun visible(vararg sources: ManifestSourceInput): ManifestPackageSources =
@@ -447,5 +724,35 @@ class ManifestFactsReaderTest {
         const val SHARED_USER = "dev.example.shared"
         const val SIGNER = "AA:BB:CC"
         const val ANDROID_NAMESPACE = "http://schemas.android.com/apk/res/android"
+
+        val COMPONENT_KINDS = listOf("activity", "service", "receiver", "provider")
+
+        /** `PermissionInfo` flag values, GrapheneOS platform_frameworks_base@17. */
+        val PERMISSION_INFO_FLAGS = mapOf(
+            0x10 to "privileged",
+            0x20 to "development",
+            0x40 to "appop",
+            0x80 to "pre23",
+            0x100 to "installer",
+            0x200 to "verifier",
+            0x400 to "preinstalled",
+            0x800 to "setup",
+            0x1000 to "instant",
+            0x2000 to "runtimeOnly",
+            0x4000 to "oem",
+            0x8000 to "vendorPrivileged",
+            0x10000 to "systemTextClassifier",
+            0x20000 to "wellbeing",
+            0x40000 to "documenter",
+            0x80000 to "configurator",
+            0x100000 to "incidentReportApprover",
+            0x200000 to "appPredictor",
+            0x400000 to "module",
+            0x800000 to "companion",
+            0x1000000 to "retailDemo",
+            0x2000000 to "recents",
+            0x4000000 to "role",
+            0x8000000 to "knownSigner",
+        )
     }
 }
