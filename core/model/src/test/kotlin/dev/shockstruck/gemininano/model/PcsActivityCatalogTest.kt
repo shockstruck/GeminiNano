@@ -92,6 +92,22 @@ class PcsActivityCatalogTest {
     }
 
     @Test
+    fun launchOutcomeMappingKeepsTheThreeDistinctFailureClasses() {
+        assertEquals(
+            PcsLaunchOutcome.ACTIVITY_NOT_FOUND,
+            PcsLaunchOutcomeMapping.fromExceptionClass("android.content.ActivityNotFoundException"),
+        )
+        assertEquals(
+            PcsLaunchOutcome.SECURITY_EXCEPTION,
+            PcsLaunchOutcomeMapping.fromExceptionClass("java.lang.SecurityException"),
+        )
+        assertEquals(
+            PcsLaunchOutcome.ERROR,
+            PcsLaunchOutcomeMapping.fromExceptionClass("java.lang.IllegalStateException"),
+        )
+    }
+
+    @Test
     fun componentsNotReadMeansNoLaunchAndNoAbsenceClaim() {
         val targets = PcsActivityCatalog.targets(
             pcs(coverage = PackageReadCoverage(components = false)),

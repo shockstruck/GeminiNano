@@ -10,6 +10,7 @@ import android.os.SystemClock
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
 import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsLaunchOutcome
+import dev.shockstruck.gemininano.model.PcsLaunchOutcomeMapping
 import dev.shockstruck.gemininano.model.PlatformPrincipals
 
 /**
@@ -64,7 +65,13 @@ class PcsActivityLauncher(
         } catch (e: SecurityException) {
             failure(target, resolved, PcsLaunchOutcome.SECURITY_EXCEPTION, e, started)
         } catch (t: Throwable) {
-            failure(target, resolved, PcsLaunchOutcome.ERROR, t, started)
+            failure(
+                target,
+                resolved,
+                PcsLaunchOutcomeMapping.fromExceptionClass(t.javaClass.name),
+                t,
+                started,
+            )
         }
     }
 

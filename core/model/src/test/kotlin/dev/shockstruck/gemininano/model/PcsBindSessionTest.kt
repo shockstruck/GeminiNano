@@ -72,6 +72,22 @@ class PcsBindSessionTest {
     }
 
     @Test
+    fun bindFlagAndBinderLabelDescribeTheAttemptWithoutInference() {
+        val connected = session().onBinderConnected(
+            interfaceDescriptor = "com.example.IPcs",
+            descriptorReadMillis = 1L,
+            descriptorErrorClass = null,
+            descriptorErrorMessage = null,
+            binderAlive = true,
+            nowMillis = 1_010L,
+        )!!
+        assertEquals("BIND_AUTO_CREATE", connected.bindFlag)
+        assertEquals("alive", connected.binderLabel)
+        assertEquals("null (no binder)", PcsBindResult("x", PcsBindOutcome.NULL_BINDING).binderLabel)
+        assertEquals("unknown", PcsBindResult("x", PcsBindOutcome.NOT_RUN).binderLabel)
+    }
+
+    @Test
     fun aFailedDescriptorReadKeepsTheBinderOutcomeAndRecordsItsOwnError() {
         val session = session()
         session.onBindAccepted()

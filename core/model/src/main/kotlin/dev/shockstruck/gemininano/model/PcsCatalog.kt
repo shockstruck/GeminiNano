@@ -343,6 +343,15 @@ object PcsActivityCatalog {
     }
 }
 
+/** Maps the launcher's own throwable to the recorded outcome; pure and testable. */
+object PcsLaunchOutcomeMapping {
+    fun fromExceptionClass(className: String): PcsLaunchOutcome = when (className) {
+        "android.content.ActivityNotFoundException" -> PcsLaunchOutcome.ACTIVITY_NOT_FOUND
+        "java.lang.SecurityException" -> PcsLaunchOutcome.SECURITY_EXCEPTION
+        else -> PcsLaunchOutcome.ERROR
+    }
+}
+
 /** The filtered feature names and whether the platform read itself failed. */
 data class SystemFeaturesFacts(
     val names: List<String>,
