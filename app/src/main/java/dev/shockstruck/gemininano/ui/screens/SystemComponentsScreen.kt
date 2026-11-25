@@ -188,9 +188,19 @@ private fun PackageCard(facts: PackageFacts) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Text("Requested permissions (${facts.requestedPermissions.size})", fontWeight = FontWeight.SemiBold)
-            facts.requestedPermissions.forEach { permission ->
-                MonoText(permission, modifier = Modifier.padding(vertical = 1.dp))
+            Text(
+                "Requested permissions (${PackageFactsFormatting.requestedPermissionsLabel(facts)})",
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (facts.permissionsRead) {
+                facts.requestedPermissions.forEach { permission ->
+                    MonoText(permission, modifier = Modifier.padding(vertical = 1.dp))
+                }
+            } else {
+                MonoText(
+                    "not read on this reduced package read",
+                    modifier = Modifier.padding(vertical = 1.dp),
+                )
             }
             if (facts.metadata.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))

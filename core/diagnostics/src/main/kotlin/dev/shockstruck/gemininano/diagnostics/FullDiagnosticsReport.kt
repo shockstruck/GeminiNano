@@ -196,10 +196,10 @@ class FullDiagnosticsReportBuilder {
             input.packages.forEach { packageFacts ->
                 out.append(packageFacts.packageName).append(": ")
                     .append(PackageFactsFormatting.visibilityLabel(packageFacts))
-                    .append(" | coverage: permissions=").append(packageFacts.coverage.permissions)
-                    .append(" components=").append(packageFacts.coverage.components)
-                    .append(" signers=").append(packageFacts.coverage.signers)
-                    .append(" metadata=").append(packageFacts.coverage.metadata)
+                    .append(" | coverage: permissions=").append(packageFacts.readCoverage.permissions)
+                    .append(" components=").append(packageFacts.readCoverage.components)
+                    .append(" signers=").append(packageFacts.readCoverage.signers)
+                    .append(" metadata=").append(packageFacts.readCoverage.metadata)
                     .append('\n')
                 if (!packageFacts.permissionsRead) {
                     out.append("  permissions not read on this reduced package read; not requested cannot be concluded.\n")
@@ -330,7 +330,7 @@ class FullDiagnosticsReportBuilder {
                     .append(packageFacts.versionCode ?: "unknown")
                     .append(" | signerSha256=")
                     .append(
-                        if (!packageFacts.coverage.signers) "not read"
+                        if (!packageFacts.readCoverage.signers) "not read"
                         else packageFacts.signingSha256.joinToString(",").ifEmpty { "none" },
                     )
                     .append(" | visibility=").append(PackageFactsFormatting.visibilityLabel(packageFacts))
@@ -434,10 +434,10 @@ class FullDiagnosticsReportBuilder {
                 "\"visibility\": " + quote(packageFacts.visibility.name) + ", " +
                 "\"permissionsRead\": " + packageFacts.permissionsRead + ", " +
                 "\"coverage\": {" +
-                "\"permissions\": " + packageFacts.coverage.permissions + ", " +
-                "\"components\": " + packageFacts.coverage.components + ", " +
-                "\"signers\": " + packageFacts.coverage.signers + ", " +
-                "\"metadata\": " + packageFacts.coverage.metadata + "}, " +
+                "\"permissions\": " + packageFacts.readCoverage.permissions + ", " +
+                "\"components\": " + packageFacts.readCoverage.components + ", " +
+                "\"signers\": " + packageFacts.readCoverage.signers + ", " +
+                "\"metadata\": " + packageFacts.readCoverage.metadata + "}, " +
                 "\"readError\": " + (packageFacts.readError?.let {
                     "{\"exceptionClass\": " + quote(it.exceptionClass) + ", " +
                         "\"message\": " + quote(it.message) + ", " +
@@ -483,7 +483,8 @@ class FullDiagnosticsReportBuilder {
                 "\"visibility\": " + quote(packageFacts.visibility.name) + ", " +
                 "\"versionName\": " + quote(packageFacts.versionName) + ", " +
                 "\"versionCode\": " + (packageFacts.versionCode?.toString() ?: "null") + ", " +
-                "\"signersRead\": " + packageFacts.coverage.signers + ", " +
+                "\"signersRead\": " + packageFacts.readCoverage.signers + ", " +
+                "\"signers\": " + quote(if (packageFacts.readCoverage.signers) "read" else "not read") + ", " +
                 "\"signerSha256\": " +
                 array(packageFacts.signingSha256) { quote(it) } + ", " +
                 "\"firstInstallTime\": " + (packageFacts.firstInstallTime?.toString() ?: "null") + ", " +

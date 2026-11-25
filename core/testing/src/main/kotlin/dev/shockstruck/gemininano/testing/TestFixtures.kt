@@ -12,6 +12,7 @@ import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.Outcome
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
+import dev.shockstruck.gemininano.model.PackageReadCoverage
 import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PcsBindOutcome
 import dev.shockstruck.gemininano.model.PcsBindResult
@@ -78,8 +79,9 @@ object TestFixtures {
         minSdk = if (visible) minSdk else null,
         enabled = if (visible) enabled else null,
         requestedPermissions = if (visible) requestedPermissions else emptyList(),
-        permissionGrants = permissionGrants,
-        components = components,
+        permissionGrants = if (visible) permissionGrants else emptyList(),
+        components = if (visible) components else emptyList(),
+        coverage = if (visible) PackageReadCoverage.FULL else PackageReadCoverage.NONE,
     )
 
     fun probeResult(

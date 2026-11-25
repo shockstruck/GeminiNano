@@ -28,6 +28,7 @@ import dev.shockstruck.gemininano.model.BuildFacts
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
+import dev.shockstruck.gemininano.model.PackageReadCoverage
 import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PromptProbe
 import dev.shockstruck.gemininano.model.SummarizationProbe
@@ -140,5 +141,9 @@ class AppGraph(context: Context) {
     )
 
     private fun invisible(packageName: String) =
-        PackageFacts(packageName = packageName, visibility = PackageVisibility.NOT_VISIBLE)
+        PackageFacts(
+            packageName = packageName,
+            visibility = PackageVisibility.NOT_VISIBLE,
+            coverage = PackageReadCoverage.NONE,
+        )
 }

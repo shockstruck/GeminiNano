@@ -136,7 +136,7 @@ object PermissionMatrixBuilder {
             val facts = factsByPackage[principal.packageName]
             val visibility = facts?.visibility ?: PackageVisibility.NOT_VISIBLE
             val visible = visibility == PackageVisibility.VISIBLE
-            val permissionsRead = visible && facts?.coverage?.permissions == true
+            val permissionsRead = visible && facts?.readCoverage?.permissions == true
             val requestedPermissions = facts?.requestedPermissions.orEmpty()
             permissions.map { permission ->
                 val fact = facts?.permissionGrants?.firstOrNull { it.permission == permission }

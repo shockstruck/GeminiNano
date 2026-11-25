@@ -41,7 +41,7 @@ object PackageFactsFormatting {
 
     fun signingLabel(facts: PackageFacts): String = when {
         !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
-        !facts.coverage.signers -> NOT_READ
+        !facts.readCoverage.signers -> NOT_READ
         facts.signingSha256.isEmpty() -> UNKNOWN
         else -> facts.signingSha256.joinToString(", ")
     }
@@ -60,21 +60,21 @@ object PackageFactsFormatting {
 
     fun requestedPermissionsLabel(facts: PackageFacts): String = when {
         !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
-        !facts.coverage.permissions -> NOT_READ
+        !facts.readCoverage.permissions -> NOT_READ
         facts.requestedPermissions.isEmpty() -> NONE
         else -> facts.requestedPermissions.size.toString()
     }
 
     fun componentsLabel(facts: PackageFacts): String = when {
         !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
-        !facts.coverage.components -> NOT_READ
+        !facts.readCoverage.components -> NOT_READ
         facts.components.isEmpty() -> NONE
         else -> facts.components.size.toString()
     }
 
     fun metadataLabel(facts: PackageFacts): String = when {
         !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
-        !facts.coverage.metadata -> NOT_READ
+        !facts.readCoverage.metadata -> NOT_READ
         facts.metadata.isEmpty() -> NONE
         else -> facts.metadata.size.toString()
     }

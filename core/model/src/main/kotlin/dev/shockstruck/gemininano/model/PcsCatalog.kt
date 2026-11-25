@@ -366,7 +366,6 @@ data class SystemFeaturesFacts(
 object SystemFeatureFilter {
 
     private val PHRASES = listOf(
-        "npu",
         "virtualization",
         "privatecompute",
         "private_compute",
@@ -377,7 +376,7 @@ object SystemFeatureFilter {
     fun matches(name: String): Boolean {
         val lower = name.lowercase()
         if (PHRASES.any { it in lower }) return true
-        return lower.split(Regex("[^a-z0-9]+")).any { it == "ai" }
+        return lower.split(Regex("[^a-z0-9]+")).any { it == "ai" || it == "npu" }
     }
 
     fun filter(names: List<String>): List<String> = names.filter(::matches).sorted()

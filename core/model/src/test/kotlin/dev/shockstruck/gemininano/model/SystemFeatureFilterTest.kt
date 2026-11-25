@@ -23,6 +23,8 @@ class SystemFeatureFilterTest {
         assertFalse(SystemFeatureFilter.matches("android.software.activities_on_secondary_displays"))
         assertFalse(SystemFeatureFilter.matches("android.hardware.audio.output"))
         assertFalse(SystemFeatureFilter.matches("android.software.available"))
+        // `npu` must be a token, not a substring of another word such as "input".
+        assertFalse(SystemFeatureFilter.matches("android.software.input_methods"))
     }
 
     @Test

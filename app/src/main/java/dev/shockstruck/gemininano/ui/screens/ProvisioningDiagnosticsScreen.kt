@@ -132,11 +132,11 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                     }
                     TextButton(
                         onClick = { startExport(json = true) },
-                        enabled = state.fullReport != null,
+                        enabled = state.fullReport != null && !state.reportStale,
                     ) { Text("Export JSON") }
                     TextButton(
                         onClick = { startExport(json = false) },
-                        enabled = state.fullReport != null,
+                        enabled = state.fullReport != null && !state.reportStale,
                     ) { Text("Export text") }
                 }
                 Text(
@@ -162,6 +162,15 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                         if (state.bindResults.isEmpty()) "not run" else state.bindResults.size.toString(),
                     )
                     KeyValueRow("Format", "JSON and text, through the existing SAF export path")
+                }
+                if (state.reportStale) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "This report predates the latest bind or launch result. " +
+                            "Run Full Diagnostics again before exporting.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
                 state.fullReportMessage?.let { text ->
                     Spacer(Modifier.height(6.dp))

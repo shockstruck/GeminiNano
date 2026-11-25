@@ -73,12 +73,53 @@ class PackageReadCoverageTest {
 
     @Test
     fun defaultEffectiveEnabledSettingFallsBackToTheManifestValue() {
-        assertEquals(true, ComponentEnabledSetting.effective(true, ComponentEnabledSetting.DEFAULT))
-        assertEquals(false, ComponentEnabledSetting.effective(false, ComponentEnabledSetting.DEFAULT))
-        assertEquals(true, ComponentEnabledSetting.effective(false, ComponentEnabledSetting.ENABLED))
-        assertEquals(false, ComponentEnabledSetting.effective(true, ComponentEnabledSetting.DISABLED))
-        assertEquals(false, ComponentEnabledSetting.effective(true, ComponentEnabledSetting.DISABLED_USER))
-        assertNull(ComponentEnabledSetting.effective(true, null))
+        assertEquals(
+            true,
+            ComponentEnabledSetting.effective(true, applicationEnabled = true, setting = ComponentEnabledSetting.DEFAULT),
+        )
+        assertEquals(
+            false,
+            ComponentEnabledSetting.effective(false, applicationEnabled = true, setting = ComponentEnabledSetting.DEFAULT),
+        )
+        assertNull(
+            ComponentEnabledSetting.effective(true, applicationEnabled = true, setting = null),
+        )
+    }
+
+    @Test
+    fun anExplicitOverrideWinsOnlyForAnEnabledApplication() {
+        assertEquals(
+            true,
+            ComponentEnabledSetting.effective(
+                manifestEffectiveEnabled = false,
+                applicationEnabled = true,
+                setting = ComponentEnabledSetting.ENABLED,
+            ),
+        )
+        assertEquals(
+            false,
+            ComponentEnabledSetting.effective(
+                manifestEffectiveEnabled = false,
+                applicationEnabled = false,
+                setting = ComponentEnabledSetting.ENABLED,
+            ),
+        )
+        assertEquals(
+            false,
+            ComponentEnabledSetting.effective(
+                manifestEffectiveEnabled = true,
+                applicationEnabled = true,
+                setting = ComponentEnabledSetting.DISABLED,
+            ),
+        )
+        assertEquals(
+            false,
+            ComponentEnabledSetting.effective(
+                manifestEffectiveEnabled = true,
+                applicationEnabled = true,
+                setting = ComponentEnabledSetting.DISABLED_USER,
+            ),
+        )
     }
 
     @Test
@@ -112,6 +153,7 @@ class PackageReadCoverageTest {
             runtimeEnabledSetting = null,
             effectivelyEnabled = ComponentEnabledSetting.effective(
                 manifestEffectiveEnabled = true,
+                applicationEnabled = true,
                 setting = null,
             ),
         )

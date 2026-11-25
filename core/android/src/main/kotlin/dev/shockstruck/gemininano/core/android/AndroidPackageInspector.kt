@@ -81,13 +81,18 @@ class AndroidPackageInspector(
         )
         val info = when (outcome) {
             PackageReadOutcome.NotVisible ->
-                return PackageFacts(packageName = packageName, visibility = PackageVisibility.NOT_VISIBLE)
+                return PackageFacts(
+                    packageName = packageName,
+                    visibility = PackageVisibility.NOT_VISIBLE,
+                    coverage = PackageReadCoverage.NONE,
+                )
 
             is PackageReadOutcome.Failed ->
                 return PackageFacts(
                     packageName = packageName,
                     visibility = PackageVisibility.READ_ERROR,
                     readError = outcome.error,
+                    coverage = PackageReadCoverage.NONE,
                 )
 
             is PackageReadOutcome.Success -> outcome.value
@@ -133,11 +138,44 @@ class AndroidPackageInspector(
                 )
             },
             components = if (coverage.components) {
+                val applicationEnabled = info.applicationInfo?.enabled
                 buildList {
-                    addAll(componentFacts(packageName, ComponentKind.ACTIVITY, info.activities, actions))
-                    addAll(componentFacts(packageName, ComponentKind.SERVICE, info.services, actions))
-                    addAll(componentFacts(packageName, ComponentKind.RECEIVER, info.receivers, actions))
-                    addAll(componentFacts(packageName, ComponentKind.PROVIDER, info.providers, actions))
+                    addAll(
+                        componentFacts(
+                            packageName,
+                            ComponentKind.ACTIVITY,
+                            info.activities,
+                            actions,
+                            applicationEnabled,
+                        ),
+                    )
+                    addAll(
+                        componentFacts(
+                            packageName,
+                            ComponentKind.SERVICE,
+                            info.services,
+                            actions,
+                            applicationEnabled,
+                        ),
+                    )
+                    addAll(
+                        componentFacts(
+                            packageName,
+                            ComponentKind.RECEIVER,
+                            info.receivers,
+                            actions,
+                            applicationEnabled,
+                        ),
+                    )
+                    addAll(
+                        componentFacts(
+                            packageName,
+                            ComponentKind.PROVIDER,
+                            info.providers,
+                            actions,
+                            applicationEnabled,
+                        ),
+                    )
                 }
             } else {
                 emptyList()
@@ -237,6 +275,7 @@ class AndroidPackageInspector(
         kind: ComponentKind,
         entries: Array<out ComponentInfo>?,
         actions: Map<String, Set<String>>,
+        applicationEnabled: Boolean?,
     ): List<ComponentFacts> = entries.orEmpty().map { component ->
         val runtimeSetting = componentEnabledSetting(packageName, component.name)
         ComponentFacts(
@@ -249,6 +288,7 @@ class AndroidPackageInspector(
             runtimeEnabledSetting = runtimeSetting,
             effectivelyEnabled = ComponentEnabledSetting.effective(
                 manifestEffectiveEnabled = component.isEnabled,
+                applicationEnabled = applicationEnabled,
                 setting = runtimeSetting,
             ),
             intentActions = actions["${kind.name}:${component.name}"].orEmpty().sorted(),

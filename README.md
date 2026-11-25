@@ -54,47 +54,27 @@ updated.
    `PROVIDE_PRIVATE_COMPUTE_SERVICES` cell, the retained **Summarization feature status**, base
    model name when returned, the last probe time, the device and the build fingerprint. Tap
    **Re-check** if it has not probed yet. Record the AICore and PCS versions exactly as shown.
-2. **Provisioning Diagnostics → Run Full Diagnostics.** Tap **Run Full Diagnostics** and wait for
-   `Report ready`. Then **Export JSON** and **Export text** (a Storage Access Framework file
-   picker, or the export directory configured in Settings). The JSON report contains:
-   the report schema and generation time; the app identity (applicationId, versionName,
-   versionCode); device facts (manufacturer, model, device, fingerprint, Android release, SDK
-   integer, security patch); the full permission matrix with *requested*, `checkPermission`,
-   the `requestedPermissionsFlags` grant bit and the `getPermissionInfo` declaration for every
-   principal × permission cell; a permission-verification block listing every permission PCS,
-   AICore and the other catalogued packages request, with the same three sources and any
-   requested-but-denied signature or privileged permission called out; every GenAI feature row
-   (status — including an explicit `NOT PROBED` row when no result exists — feature id, error
-   code, exception class, message, base model name or signature, vector dimension and token
-   limit when returned, latency, probe time, last download); the four Prompt configs with the
-   same fields; the retained
-   summarization probe; the PCS surface (components, declared permission, enabled state, probed
-   intent actions); any PCS bind results already run; the offline inference matrix if it has run;
-   and the diagnostic event log. The text export carries the same content in readable form. The
-   action performs no download and no bind.
-3. **AICore Features → Re-probe all.** Tap **Re-probe all features** in the GenAI feature matrix
+2. **AICore Features → Re-probe all.** Tap **Re-probe all features** in the GenAI feature matrix
    and **Re-probe all four** in the Prompt card. For every row record: status, feature id, error
    code, exception class, message, base model name or model signature when the API returns one,
    probe time and probe latency. Rows are independent — one failure, or one probe that hangs to
    its timeout, never changes another row. A `606` row means AICore has no configuration entry
    for that feature id; report it as unprovisioned. A row with no result reads **NOT PROBED**;
    that is not an error.
-4. **Model Manager.** Only a row ML Kit itself reports as **DOWNLOADABLE** offers a download
+3. **Model Manager.** Only a row ML Kit itself reports as **DOWNLOADABLE** offers a download
    button. Tap **Download** on that row and record the progress bytes and the result; after a
    failure the same row offers **Retry download** — record that result too. Nothing downloads
    automatically, and no row offers a size the SDK did not report. A **PROBE ERROR** row shows
    the error code, exception class, message and probe time; a row with no result shows
    **NOT PROBED**, and its detail is never used for a probed result.
-5. **Offline Inference.** Before running anything, disable Wi-Fi and mobile data yourself in the
+4. **Offline Inference.** Before running anything, disable Wi-Fi and mobile data yourself in the
    system settings (airplane mode is a convenient way to do both) and confirm both are off. Then
    tap **Run offline matrix (N eligible)** and record each row's outcome, output/detail, error
-   code, exception class, message and latency. Export the results afterwards through
-   **Provisioning Diagnostics → Run Full Diagnostics → Export JSON**: the report's `offline` array
-   carries them. The app never toggles Wi-Fi or mobile data and cannot control AICore's or PCS's
-   network use, so a success row is evidence of offline operation **only** when you disabled
-   connectivity yourself and checked it was off. A success with connectivity on is not offline
-   evidence.
-6. **Private Compute Services → Run bind probe.** This is a separate explicit action; Run Full
+   code, exception class, message and latency. The final report in step 7 carries them. The app
+   never toggles Wi-Fi or mobile data and cannot control AICore's or PCS's network use, so a
+   success row is evidence of offline operation **only** when you disabled connectivity yourself
+   and checked it was off. A success with connectivity on is not offline evidence.
+5. **Private Compute Services → Run bind probe.** This is a separate explicit action; Run Full
    Diagnostics does not trigger it. The rows are planned from the installed PCS package's own
    exported, effectively enabled, permission-free services (the current build's
    `com.google.android.apps.miphone.astrea.*` names; the older open-source names are aliases).
@@ -108,18 +88,38 @@ updated.
    3-second wait and exactly one unbind; it sends no binder transaction, builds no AIDL stub,
    calls no `asInterface` and uses no transaction code. **Its result is this app's own bind
    attempt and never proves AICore's access to PCS.**
-7. **Private Compute Services → launch controls.** **Open PCS settings** and **Open Network
+6. **Private Compute Services → launch controls.** **Open PCS settings** and **Open Network
    usage log** are separate explicit taps, shown only when the installed package reports the
    activity as exported, effectively enabled and permission-free. The item-details activity is
    listed but not launched because its required extras are not publicly known; none are
    guessed. Each tap records resolved/launched, `ActivityNotFoundException`,
    `SecurityException` or another error. Nothing is read back from another app's screen.
+7. **Provisioning Diagnostics → Run Full Diagnostics and export.** Do this **after** the bind and
+   launch steps so the snapshot contains them. Tap **Run Full Diagnostics**, wait for
+   `Report ready`, then **Export JSON** and **Export text** (a Storage Access Framework file
+   picker, or the export directory configured in Settings). The JSON report contains:
+   the report schema and generation time; the app identity; device facts; the full permission
+   matrix with *requested*, `checkPermission`, the `requestedPermissionsFlags` bit and the
+   `getPermissionInfo` declaration for every matrix cell; a permission-verification block with
+   **every requested permission for AICore and PCS**, while other packages keep only AICore
+   `BIND_SERVICE`, `QUERY_ALL_PACKAGES` and the matrix columns; every GenAI feature row with
+   `probeExecuted` and `featureAvailable` kept separate (including an explicit `NOT PROBED` row
+   when no result exists); the four Prompt configs on the same basis; the retained summarization
+   probe; the PCS surface and launch targets; every planned bind row — `NOT RUN` if it was not
+   attempted — with bind flag, outcome, guarded descriptor, binder label, exception, elapsed time
+   and unbind count; the launch results; the offline inference matrix if it has run; package
+   versionCode and signer SHA-256 for AICore, PCS, ASI and GMS; the relevant
+   `getSystemAvailableFeatures` names; the explicitly untested operations; and the diagnostic
+   event log. `BIND_SERVICE` rows carry the holder's first-install and last-update times beside
+   AICore's first-install time. If a bind or launch finishes after the report was generated, the
+   report card says the report predates it and the export buttons stay disabled until you run
+   Full Diagnostics again. The action performs no download and no bind.
 8. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
    convenient); the Diagnostic Logs JSON export if you want the event stream; the AICore and PCS
    versions from Overview; the permission matrix (already in the JSON export); the per-feature
-   and per-Prompt rows; the six bind outcomes; and the offline matrix with a note confirming you
-   disabled connectivity yourself.
-8. **Known platform limit.** On GrapheneOS the summarization probe reports
+   and per-Prompt rows; the bind outcomes; the launch outcomes; and the offline matrix with a
+   note confirming you disabled connectivity yourself.
+9. **Known platform limit.** On GrapheneOS the summarization probe reports
    `Feature 622 is not available` (`3-PREPARATION_ERROR` / `606-FEATURE_NOT_FOUND`): AICore has
    no provisioning entry for feature 622. Feature 622 is the AICore AIDL constant
    `SAPI_SUMMARIZATION_EN_2` (decompiled source, not a model); the model is unknown. No rootless

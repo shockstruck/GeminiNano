@@ -135,14 +135,21 @@ object ComponentEnabledSetting {
     }
 
     /**
-     * Effective enabled state: DEFAULT falls back to `ComponentInfo.isEnabled()`;
-     * an explicit override wins; a failed lookup is unknown, never false.
+     * Effective enabled state. A disabled application is never effectively enabled;
+     * otherwise an explicit override wins, DEFAULT falls back to
+     * `ComponentInfo.isEnabled()`, and a failed lookup is unknown, never false.
      */
-    fun effective(manifestEffectiveEnabled: Boolean, setting: Int?): Boolean? = when (setting) {
-        null -> null
-        DEFAULT -> manifestEffectiveEnabled
-        ENABLED -> true
-        DISABLED, DISABLED_USER, DISABLED_UNTIL_USED -> false
+    fun effective(
+        manifestEffectiveEnabled: Boolean,
+        applicationEnabled: Boolean?,
+        setting: Int?,
+    ): Boolean? = when {
+        applicationEnabled == false -> false
+        setting == null -> null
+        setting == DEFAULT -> manifestEffectiveEnabled
+        setting == ENABLED -> true
+        setting == DISABLED || setting == DISABLED_USER ||
+            setting == DISABLED_UNTIL_USED -> false
         else -> null
     }
 }
@@ -285,9 +292,16 @@ data class PackageFacts(
 ) {
     val visible: Boolean get() = visibility == PackageVisibility.VISIBLE
 
-    val permissionsRead: Boolean get() = visible && coverage.permissions
-    val componentsRead: Boolean get() = visible && coverage.components
-    val signersRead: Boolean get() = visible && coverage.signers
+    /**
+     * Coverage after visibility: a package that is not VISIBLE was not read at all, so
+     * every fact group is false on every construction path.
+     */
+    val readCoverage: PackageReadCoverage
+        get() = if (visible) coverage else PackageReadCoverage.NONE
+
+    val permissionsRead: Boolean get() = visible && readCoverage.permissions
+    val componentsRead: Boolean get() = visible && readCoverage.components
+    val signersRead: Boolean get() = visible && readCoverage.signers
 
     /** Requested, denied, and declared signature or privileged. */
     val requestedButDeniedSignatureOrPrivileged: List<PermissionGrantFacts>

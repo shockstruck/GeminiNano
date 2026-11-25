@@ -9,6 +9,8 @@ import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.OfflineInferenceOutcome
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
 import dev.shockstruck.gemininano.model.PackageFacts
+import dev.shockstruck.gemininano.model.PackageReadError
+import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
 import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
@@ -215,6 +217,41 @@ class FullDiagnosticsReportTest {
         assertTrue(untested.any { it.contains("Launch PCS settings") })
         assertTrue(untested.any { it.contains("requires extras that are not publicly known") })
         assertTrue(untested.any { it == "Offline inference matrix" })
+    }
+
+    @Test
+    fun aNotVisibleOrReadErrorPackageNeverClaimsAFullRead() {
+        val notVisible = PackageFacts(
+            packageName = "com.google.android.apps.aicore",
+            visibility = PackageVisibility.NOT_VISIBLE,
+        )
+        val readError = PackageFacts(
+            packageName = "com.google.android.as",
+            visibility = PackageVisibility.READ_ERROR,
+            readError = PackageReadError("java.lang.RuntimeException", "x", 4),
+        )
+        val report = FullDiagnosticsReportBuilder().build(
+            input(packages = listOf(notVisible, readError)),
+        )
+        val json = JSONObject(report.json)
+        val packages = (0 until json.getJSONArray("permissionVerification").length())
+            .map { json.getJSONArray("permissionVerification").getJSONObject(it) }
+        packages.forEach { packageJson ->
+            assertFalse(packageJson.getBoolean("permissionsRead"))
+            val coverage = packageJson.getJSONObject("coverage")
+            assertFalse(coverage.getBoolean("permissions"))
+            assertFalse(coverage.getBoolean("components"))
+            assertFalse(coverage.getBoolean("signers"))
+            assertFalse(coverage.getBoolean("metadata"))
+        }
+        val identities = (0 until json.getJSONArray("packageIdentities").length())
+            .map { json.getJSONArray("packageIdentities").getJSONObject(it) }
+        identities.forEach { identity ->
+            assertFalse(identity.getBoolean("signersRead"))
+            assertEquals("not read", identity.getString("signers"))
+            assertEquals(0, identity.getJSONArray("signerSha256").length())
+        }
+        assertTrue(report.text.contains("signerSha256=not read"))
     }
 
     @Test

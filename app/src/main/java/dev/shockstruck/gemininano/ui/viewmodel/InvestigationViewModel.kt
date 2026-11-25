@@ -8,6 +8,7 @@ import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReport
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReportBuilder
 import dev.shockstruck.gemininano.diagnostics.ProvisioningDecision
 import dev.shockstruck.gemininano.diagnostics.ProvisioningEvidence
+import dev.shockstruck.gemininano.diagnostics.ReportFreshness
 import dev.shockstruck.gemininano.model.DownloadResult
 import dev.shockstruck.gemininano.model.FeatureDownloadProgress
 import dev.shockstruck.gemininano.model.FeatureMatrixFormatting
@@ -73,6 +74,7 @@ data class InvestigationUiState(
     val fullReport: FullDiagnosticsReport? = null,
     val fullReportBusy: Boolean = false,
     val fullReportMessage: String? = null,
+    val lastObservationAtEpochMillis: Long? = null,
 ) {
     fun promptStatus(config: PromptModelConfig): PromptConfigStatus? =
         prompt.firstOrNull { it.config == config }
@@ -92,6 +94,12 @@ data class InvestigationUiState(
 
     val eligibleBindCount: Int
         get() = bindPlan?.eligibleCount ?: 0
+
+    val reportStale: Boolean
+        get() = ReportFreshness.isStale(
+            reportGeneratedAtEpochMillis = fullReport?.generatedAtEpochMillis,
+            lastObservationAtEpochMillis = lastObservationAtEpochMillis,
+        )
 }
 
 /**
@@ -380,6 +388,7 @@ class InvestigationViewModel(
                     fullReportBusy = false,
                     fullReport = report,
                     fullReportMessage = "Report ready. Export it as JSON or text; no download or bind was performed.",
+                    lastObservationAtEpochMillis = null,
                 )
             }
             recomputeDecision()
@@ -401,6 +410,7 @@ class InvestigationViewModel(
                     bindMessage = "Bind probe finished: ${results.count { r -> r.outcome == PcsBindOutcome.BINDER_RETURNED }} " +
                         "of ${plan.eligibleCount} eligible services returned a binder; every accepted bind " +
                         "was unbound once. These are this app's own results, not AICore's access.",
+                    lastObservationAtEpochMillis = System.currentTimeMillis(),
                 )
             }
             recomputeDecision()
@@ -431,6 +441,7 @@ class InvestigationViewModel(
                             (result.exceptionClass?.let { " ($it)" } ?: "") +
                             (result.exceptionMessage?.let { ": $it" } ?: "")
                     },
+                    lastObservationAtEpochMillis = System.currentTimeMillis(),
                 )
             }
         }

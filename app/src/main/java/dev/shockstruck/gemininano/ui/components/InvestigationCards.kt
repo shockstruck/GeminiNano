@@ -315,11 +315,13 @@ fun PcsSurfaceCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(
-                onClick = { onLaunch(target) },
-                enabled = target.launchable && !launchBusy,
-            ) {
-                Text("Open ${target.label}")
+            if (target.launchable) {
+                TextButton(
+                    onClick = { onLaunch(target) },
+                    enabled = !launchBusy,
+                ) {
+                    Text("Open ${target.label}")
+                }
             }
             launchResults.firstOrNull { it.className == target.className }?.let { result ->
                 KeyValueRow("Last launch", result.outcomeLabel)
