@@ -18,7 +18,7 @@ class OverviewPresenterTest {
             DiagnosticSnapshot(
                 aicore = TestFixtures.packageFacts("com.google.android.aicore", versionName = "17.0.1"),
                 pcs = TestFixtures.packageFacts("com.google.android.as.oss"),
-                pccPermissionState = GrantState.DENIED,
+                permissionMatrix = TestFixtures.permissionMatrix(pcsPcc = GrantState.DENIED),
                 probe = null,
                 lastFailure = null,
                 build = TestFixtures.buildFacts(),
@@ -44,7 +44,7 @@ class OverviewPresenterTest {
             DiagnosticSnapshot(
                 aicore = TestFixtures.packageFacts("com.google.android.aicore"),
                 pcs = TestFixtures.packageFacts("com.google.android.as.oss"),
-                pccPermissionState = GrantState.DENIED,
+                permissionMatrix = TestFixtures.permissionMatrix(pcsPcc = GrantState.DENIED),
                 probe = probe,
                 lastFailure = null,
                 build = TestFixtures.buildFacts(),
@@ -62,7 +62,7 @@ class OverviewPresenterTest {
             DiagnosticSnapshot(
                 aicore = TestFixtures.packageFacts("com.google.android.aicore", visible = false),
                 pcs = TestFixtures.packageFacts("com.google.android.as.oss", visible = false),
-                pccPermissionState = GrantState.UNKNOWN,
+                permissionMatrix = TestFixtures.permissionMatrix(pcsVisible = false, pcsPcc = GrantState.UNKNOWN),
                 probe = null,
                 lastFailure = null,
                 build = TestFixtures.buildFacts(),
@@ -71,7 +71,10 @@ class OverviewPresenterTest {
         val aicore = model.rows.first { it.label == "Android AICore" }
         assertEquals(dev.shockstruck.gemininano.model.PackageFactsFormatting.NOT_VISIBLE, aicore.value)
         val pcc = model.rows.first { it.label == "PROVIDE_PRIVATE_COMPUTE_SERVICES (PCS)" }
-        assertEquals("unknown", pcc.value)
+        assertEquals(
+            dev.shockstruck.gemininano.model.PermissionStatus.NOT_VISIBLE.label,
+            pcc.value,
+        )
     }
 
     @Test
@@ -80,7 +83,7 @@ class OverviewPresenterTest {
             DiagnosticSnapshot(
                 aicore = TestFixtures.packageFacts("com.google.android.aicore"),
                 pcs = TestFixtures.packageFacts("com.google.android.as.oss"),
-                pccPermissionState = GrantState.GRANTED,
+                permissionMatrix = TestFixtures.permissionMatrix(pcsPcc = GrantState.GRANTED),
                 probe = null,
                 lastFailure = null,
                 build = TestFixtures.buildFacts(),
@@ -96,7 +99,7 @@ class OverviewPresenterTest {
             DiagnosticSnapshot(
                 aicore = TestFixtures.packageFacts("com.google.android.aicore"),
                 pcs = TestFixtures.packageFacts("com.google.android.as.oss"),
-                pccPermissionState = GrantState.DENIED,
+                permissionMatrix = TestFixtures.permissionMatrix(pcsPcc = GrantState.DENIED),
                 probe = null,
                 lastFailure = TestFixtures.event(),
                 build = TestFixtures.buildFacts(),
@@ -117,7 +120,7 @@ class OverviewPresenterTest {
                     versionCode = 42L,
                 ),
                 pcs = TestFixtures.packageFacts("com.google.android.as.oss"),
-                pccPermissionState = GrantState.DENIED,
+                permissionMatrix = TestFixtures.permissionMatrix(pcsPcc = GrantState.DENIED),
                 probe = null,
                 lastFailure = null,
                 build = TestFixtures.buildFacts(),

@@ -39,9 +39,12 @@ class AndroidPackageInspector(
     override fun inspectPackages(): List<PackageFacts> {
         val actionsByPackage = collectIntentActions()
         return PackageCatalog.TARGET_PACKAGES.map { packageName ->
-            inspectPackage(packageName, actionsByPackage[packageName].orEmpty())
+            inspectPackageFacts(packageName, actionsByPackage[packageName].orEmpty())
         }
     }
+
+    override fun inspectPackage(packageName: String): PackageFacts =
+        inspectPackageFacts(packageName, collectIntentActions()[packageName].orEmpty())
 
     override fun checkPermission(packageName: String, permission: String): GrantState = try {
         when (packageManager.checkPermission(permission, packageName)) {
@@ -55,7 +58,7 @@ class AndroidPackageInspector(
 
     override fun buildFacts(): BuildFacts = AndroidBuildFacts.read()
 
-    private fun inspectPackage(
+    private fun inspectPackageFacts(
         packageName: String,
         actions: Map<String, Set<String>>,
     ): PackageFacts {

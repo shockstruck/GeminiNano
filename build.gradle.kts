@@ -1,4 +1,23 @@
 // Top-level build file. The real configuration lives in the app and core modules.
+//
+// AGP 9 ships with a built-in Kotlin runtime dependency. The public Prompt artifact
+// (com.google.mlkit:genai-prompt:1.0.0-beta5) is compiled with Kotlin metadata 2.4.0
+// and the official googlesamples/mlkit sample consumes it with Kotlin 2.3.0. AGP's
+// runtime dependency is raised to that same version with the documented strictly()
+// constraint, so the pinned AGP/Gradle wrapper stay unchanged.
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin") {
+            version { strictly("2.3.0") }
+        }
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false

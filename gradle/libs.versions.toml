@@ -6,10 +6,12 @@ junitVersion = "1.3.0"
 espressoCore = "3.7.0"
 lifecycleRuntimeKtx = "2.11.0"
 activityCompose = "1.13.0"
-kotlin = "2.2.10"
+kotlin = "2.3.0"
 composeBom = "2026.02.01"
 # On-device Gemini Nano summarization (runs via Android AICore — no API key, no network).
 mlkitGenaiSummarization = "1.0.0-beta1"
+# Independent Prompt API. The only new dependency in Stage 3b.
+mlkitGenaiPrompt = "1.0.0-beta5"
 # Coroutines: -guava lets us await() the ML Kit Guava ListenableFutures from suspend functions.
 coroutines = "1.9.0"
 # Lets us obtain a ViewModel inside a Composable via viewModel().
@@ -35,6 +37,7 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleViewmodelCompose" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleViewmodelCompose" }
 mlkit-genai-summarization = { group = "com.google.mlkit", name = "genai-summarization", version.ref = "mlkitGenaiSummarization" }
+mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-guava = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-guava", version.ref = "coroutines" }

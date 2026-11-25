@@ -74,11 +74,15 @@ data class Recommendation(
     val detail: String,
 )
 
-/** Inputs the decision tree needs, already collected from the platform. */
+/**
+ * Inputs the decision tree needs, already collected from the platform. The single
+ * PCS permission flag is replaced by the full requested-vs-granted matrix so no
+ * principal's state is inferred from another's.
+ */
 data class DiagnosticSnapshot(
     val aicore: PackageFacts,
     val pcs: PackageFacts,
-    val pccPermissionState: GrantState,
+    val permissionMatrix: PermissionMatrix,
     val probe: SummarizationProbeResult?,
     val lastFailure: DiagnosticEvent?,
     val build: BuildFacts,

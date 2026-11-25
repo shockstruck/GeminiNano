@@ -2,12 +2,13 @@ package dev.shockstruck.gemininano.diagnostics
 
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
 import dev.shockstruck.gemininano.model.FeatureStatusKind
-import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.LabelledValue
 import dev.shockstruck.gemininano.model.OverviewModel
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
 import dev.shockstruck.gemininano.model.PackageVisibility
+import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
+import dev.shockstruck.gemininano.model.PermissionStatus
 
 /**
  * Builds the Overview rows from observed facts only. Anything the app could not read
@@ -18,12 +19,15 @@ class OverviewPresenter(
 ) {
 
     fun present(snapshot: DiagnosticSnapshot): OverviewModel {
+        val pcsPcc = PermissionMatrixFormatting.pcsPcc(snapshot.permissionMatrix)
         val rows = listOf(
             row("Android AICore", aicoreValue(snapshot.aicore)),
             row("Private Compute Services", aicoreValue(snapshot.pcs)),
             row(
                 "PROVIDE_PRIVATE_COMPUTE_SERVICES (PCS)",
-                permissionValue(snapshot.pccPermissionState),
+                PermissionMatrixFormatting.renderCell(pcsPcc),
+                unknown = pcsPcc?.status != PermissionStatus.GRANTED &&
+                    pcsPcc?.status != PermissionStatus.DENIED,
             ),
             row(
                 "Summarization feature status",
@@ -77,8 +81,6 @@ class OverviewPresenter(
         else -> "${facts.versionName ?: PackageFactsFormatting.UNKNOWN} " +
             "(versionCode ${facts.versionCode?.toString() ?: PackageFactsFormatting.UNKNOWN})"
     }
-
-    private fun permissionValue(state: GrantState): String = state.label
 
     private fun row(label: String, value: String, unknown: Boolean = false): LabelledValue =
         LabelledValue(label = label, value = value, isUnknown = unknown)

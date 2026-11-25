@@ -37,10 +37,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.shockstruck.gemininano.AppGraph
+import dev.shockstruck.gemininano.ui.screens.AicoreFeaturesScreen
 import dev.shockstruck.gemininano.ui.screens.DiagnosticLogsScreen
 import dev.shockstruck.gemininano.ui.screens.OverviewScreen
 import dev.shockstruck.gemininano.ui.screens.PlaceholderScreens
+import dev.shockstruck.gemininano.ui.screens.PrivateComputeServicesScreen
 import dev.shockstruck.gemininano.ui.screens.PrivacyScreen
+import dev.shockstruck.gemininano.ui.screens.ProvisioningDiagnosticsScreen
 import dev.shockstruck.gemininano.ui.screens.SettingsScreen
 import dev.shockstruck.gemininano.ui.screens.SystemComponentsScreen
 import kotlinx.coroutines.launch
@@ -170,10 +173,10 @@ private fun SectionHost(section: Section, graph: AppGraph, modifier: Modifier) {
     when (section) {
         Section.OVERVIEW -> OverviewScreen(graph, modifier)
         Section.SYSTEM_COMPONENTS -> SystemComponentsScreen(graph, modifier)
-        Section.AICORE_FEATURES,
-        Section.PRIVATE_COMPUTE_SERVICES,
+        Section.AICORE_FEATURES -> AicoreFeaturesScreen(graph, modifier)
+        Section.PRIVATE_COMPUTE_SERVICES -> PrivateComputeServicesScreen(graph, modifier)
+        Section.PROVISIONING_DIAGNOSTICS -> ProvisioningDiagnosticsScreen(graph, modifier)
         Section.MODEL_MANAGER,
-        Section.PROVISIONING_DIAGNOSTICS,
         Section.OFFLINE_INFERENCE,
         -> PlaceholderScreens(section = section, modifier = modifier)
 

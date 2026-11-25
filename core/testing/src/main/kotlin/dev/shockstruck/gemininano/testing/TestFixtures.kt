@@ -12,7 +12,18 @@ import dev.shockstruck.gemininano.model.Outcome
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
 import dev.shockstruck.gemininano.model.PackageVisibility
+import dev.shockstruck.gemininano.model.PcsBindOutcome
+import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PermissionGrantFacts
+import dev.shockstruck.gemininano.model.PermissionMatrix
+import dev.shockstruck.gemininano.model.PermissionMatrixBuilder
+import dev.shockstruck.gemininano.model.PermissionPrincipal
+import dev.shockstruck.gemininano.model.PlatformPermissions
+import dev.shockstruck.gemininano.model.PlatformPrincipals
+import dev.shockstruck.gemininano.model.PromptConfigStatus
+import dev.shockstruck.gemininano.model.PromptFailureParsing
+import dev.shockstruck.gemininano.model.PromptModelConfig
+import dev.shockstruck.gemininano.model.PromptProbe
 import dev.shockstruck.gemininano.model.Severity
 import dev.shockstruck.gemininano.model.SummarizationProbe
 import dev.shockstruck.gemininano.model.SummarizationProbeResult
@@ -124,6 +135,143 @@ object TestFixtures {
         exported = exported,
         requiredPermission = requiredPermission,
     )
+
+    private fun matrixFacts(
+        packageName: String,
+        visible: Boolean,
+        requested: Set<String>,
+        grants: Map<String, GrantState>,
+    ) = PackageFacts(
+        packageName = packageName,
+        visibility = if (visible) PackageVisibility.VISIBLE else PackageVisibility.NOT_VISIBLE,
+        requestedPermissions = PlatformPermissions.MATRIX.filter { it in requested },
+        permissionGrants = PlatformPermissions.MATRIX.map { permission ->
+            PermissionGrantFacts(
+                permission = permission,
+                state = grants[permission] ?: GrantState.DENIED,
+                requested = permission in requested,
+            )
+        },
+    )
+
+    fun permissionMatrix(
+        pcsVisible: Boolean = true,
+        pcsPcc: GrantState = GrantState.DENIED,
+        pcsPccRequested: Boolean = true,
+        aicoreVisible: Boolean = true,
+        aicorePcc: GrantState = GrantState.DENIED,
+        aicorePccRequested: Boolean = false,
+        aicoreBind: GrantState = GrantState.DENIED,
+        appPackageName: String = PlatformPrincipals.APP,
+        appBind: GrantState = GrantState.GRANTED,
+        appBindRequested: Boolean = true,
+        appInternet: GrantState = GrantState.DENIED,
+        appInternetRequested: Boolean = false,
+    ): PermissionMatrix {
+        val principals = listOf(
+            PermissionPrincipal("PCS", PlatformPrincipals.PCS),
+            PermissionPrincipal("ASI", PlatformPrincipals.ASI),
+            PermissionPrincipal("AICore", PlatformPrincipals.AICORE),
+            PermissionPrincipal("AICore legacy", PlatformPrincipals.AICORE_LEGACY),
+            PermissionPrincipal("App", appPackageName),
+        )
+        val pcsRequested = buildSet {
+            if (pcsPccRequested) add(PlatformPermissions.PCC)
+            add(PlatformPermissions.AICORE_BIND)
+        }
+        val aicoreRequested = buildSet {
+            if (aicorePccRequested) add(PlatformPermissions.PCC)
+            add(PlatformPermissions.INTERNET)
+        }
+        val appRequested = buildSet {
+            if (appBindRequested) add(PlatformPermissions.AICORE_BIND)
+            if (appInternetRequested) add(PlatformPermissions.INTERNET)
+        }
+        val facts = mapOf(
+            PlatformPrincipals.PCS to matrixFacts(
+                PlatformPrincipals.PCS,
+                pcsVisible,
+                pcsRequested,
+                mapOf(
+                    PlatformPermissions.PCC to pcsPcc,
+                    PlatformPermissions.AICORE_BIND to GrantState.GRANTED,
+                ),
+            ),
+            PlatformPrincipals.ASI to matrixFacts(
+                PlatformPrincipals.ASI,
+                true,
+                emptySet(),
+                emptyMap(),
+            ),
+            PlatformPrincipals.AICORE to matrixFacts(
+                PlatformPrincipals.AICORE,
+                aicoreVisible,
+                aicoreRequested,
+                mapOf(
+                    PlatformPermissions.PCC to aicorePcc,
+                    PlatformPermissions.AICORE_BIND to aicoreBind,
+                ),
+            ),
+            PlatformPrincipals.AICORE_LEGACY to matrixFacts(
+                PlatformPrincipals.AICORE_LEGACY,
+                false,
+                emptySet(),
+                emptyMap(),
+            ),
+            appPackageName to matrixFacts(
+                appPackageName,
+                true,
+                appRequested,
+                mapOf(
+                    PlatformPermissions.AICORE_BIND to appBind,
+                    PlatformPermissions.INTERNET to appInternet,
+                ),
+            ),
+        )
+        return PermissionMatrixBuilder.build(
+            principals = principals,
+            permissions = PlatformPermissions.MATRIX,
+            factsByPackage = facts,
+        )
+    }
+
+    fun promptStatus(
+        config: PromptModelConfig = PromptModelConfig.ALL.first(),
+        status: FeatureStatusKind = FeatureStatusKind.PROBE_ERROR,
+        featureId: Int? = 636,
+        errorCode: Int? = 606,
+        message: String? = "Feature 636 is not available.",
+        baseModelName: String? = null,
+        generatedText: String? = null,
+        latencyMillis: Long = 12L,
+    ): PromptConfigStatus = PromptConfigStatus(
+        config = config,
+        status = status,
+        featureId = featureId ?: PromptFailureParsing.parseFeatureId(message),
+        errorCode = errorCode,
+        exceptionClass = "com.google.mlkit.genai.common.GenAiException",
+        message = message,
+        baseModelName = baseModelName,
+        generatedText = generatedText,
+        latencyMillis = latencyMillis,
+        probedAtEpochMillis = NOW,
+    )
+
+    fun bindResult(
+        componentName: String = "com.google.android.apps.miphone.pcs.grpc.PcsGrpcService",
+        outcome: PcsBindOutcome = PcsBindOutcome.BINDER_RETURNED,
+        exceptionClass: String? = null,
+        exceptionMessage: String? = null,
+        interfaceDescriptor: String? = "com.example.IPcs",
+    ): PcsBindResult = PcsBindResult(
+        componentName = componentName,
+        outcome = outcome,
+        exceptionClass = exceptionClass,
+        exceptionMessage = exceptionMessage,
+        interfaceDescriptor = interfaceDescriptor,
+        elapsedMillis = 25L,
+        unbindCalls = 1,
+    )
 }
 
 class FakeSummarizationProbe(
@@ -174,8 +322,46 @@ class FakePackageFactsProvider(
         return packages
     }
 
+    override fun inspectPackage(packageName: String): PackageFacts =
+        packages.firstOrNull { it.packageName == packageName }
+            ?: PackageFacts(
+                packageName = packageName,
+                visibility = PackageVisibility.NOT_VISIBLE,
+            )
+
     override fun checkPermission(packageName: String, permission: String): GrantState =
         grants[packageName to permission] ?: GrantState.DENIED
 
     override fun buildFacts(): BuildFacts = build
+}
+
+class FakePromptProbe(
+    var results: Map<PromptModelConfig, PromptConfigStatus> = emptyMap(),
+    var downloadResult: DownloadResult = DownloadResult(true, 10L, 100L, null),
+) : PromptProbe {
+
+    var probeCalls: Int = 0
+        private set
+    var downloadCalls: Int = 0
+        private set
+    var closed: Int = 0
+        private set
+
+    override suspend fun probe(config: PromptModelConfig): PromptConfigStatus {
+        probeCalls++
+        return results[config] ?: TestFixtures.promptStatus(config = config)
+    }
+
+    override suspend fun download(
+        config: PromptModelConfig,
+        onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+    ): DownloadResult {
+        downloadCalls++
+        onProgress(downloadResult.bytesDownloaded ?: 0L, downloadResult.totalBytes)
+        return downloadResult
+    }
+
+    override fun close() {
+        closed++
+    }
 }

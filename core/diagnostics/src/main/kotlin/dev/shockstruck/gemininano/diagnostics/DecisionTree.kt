@@ -4,6 +4,7 @@ import dev.shockstruck.gemininano.model.DiagnosticEvent
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFailure
+import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
 import dev.shockstruck.gemininano.model.Recommendation
 import dev.shockstruck.gemininano.model.RecommendationKind
 
@@ -40,9 +41,10 @@ class DecisionTree {
         return when (probe.status) {
             FeatureStatusKind.AVAILABLE -> Recommendation(
                 kind = RecommendationKind.OK,
-                headline = "Summarization is provisioned",
+                headline = "Summarization reports AVAILABLE",
                 detail = "ML Kit reports the summarization feature as AVAILABLE. " +
-                    "Run the built-in summarization test below; no download is needed.",
+                    "Run the built-in summarization test below to verify a successful generation; " +
+                    "no download is needed.",
             )
 
             FeatureStatusKind.DOWNLOADABLE -> Recommendation(
@@ -95,7 +97,10 @@ class DecisionTree {
                     append("AICore is present and bound, but it has no configuration entry for feature 622. ")
                     append("That configuration is delivered through Private Compute Services; on this build PCS ")
                     append("reports ")
-                    append(snapshot.pccPermissionState.label)
+                    append(
+                        PermissionMatrixFormatting.pcsPcc(snapshot.permissionMatrix)?.status?.label
+                            ?: "unknown",
+                    )
                     append(" for android.permission.PROVIDE_PRIVATE_COMPUTE_SERVICES")
                     if (!snapshot.pcs.visible) append(" and the PCS package is not visible")
                     append(". No app-level action can add the entry; this is the platform restriction Stage 1 documented. ")

@@ -17,8 +17,8 @@ import dev.shockstruck.gemininano.ui.components.SectionCard
 import dev.shockstruck.gemininano.ui.components.StatusBadge
 
 /**
- * Sections the Stage 2 foundation deliberately leaves empty. They state the stage and the
- * planned scope, and never show estimated or fabricated probe data.
+ * Sections this Stage 3b build deliberately leaves for Stage 4. They state the stage and
+ * the planned scope, and never show estimated or fabricated probe data.
  */
 @Composable
 fun PlaceholderScreens(section: Section, modifier: Modifier = Modifier) {
@@ -39,7 +39,7 @@ fun PlaceholderScreens(section: Section, modifier: Modifier = Modifier) {
                 )
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    text = "This section is intentionally empty in the Stage 2 foundation build. " +
+                    text = "This section is intentionally empty in this build ($stage). " +
                         "It shows no device data, no estimated values and no placeholder success states.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -56,7 +56,8 @@ fun PlaceholderScreens(section: Section, modifier: Modifier = Modifier) {
                 subtitle = "The implemented sections are fully functional.",
             ) {
                 Text(
-                    text = "Overview, System Components, Privacy, Diagnostic Logs and Settings are implemented. " +
+                    text = "Overview, System Components, AICore Features, Private Compute Services, " +
+                        "Provisioning Diagnostics, Privacy, Diagnostic Logs and Settings are implemented. " +
                         "The retained summarization probe and its one-time download action are on the Overview screen.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -66,32 +67,11 @@ fun PlaceholderScreens(section: Section, modifier: Modifier = Modifier) {
 }
 
 private fun plannedScope(section: Section): List<String> = when (section) {
-    Section.AICORE_FEATURES -> listOf(
-        "One independent probe per public ML Kit GenAI artifact: Prompt, Summarization, Rewriting, Proofreading, Image Description, Embedding, Speech Recognition, Speech Translation and Text to Speech.",
-        "Per-feature status (UNAVAILABLE / DOWNLOADABLE / DOWNLOADING / AVAILABLE), download eligibility, live progress and exact error type, code and message.",
-        "The Prompt API probed independently of feature 622; a failure of one feature never marks the others unavailable.",
-        "Execution latency and base model name where the public API exposes it.",
-    )
-
-    Section.PRIVATE_COMPUTE_SERVICES -> listOf(
-        "Enumerated exported components of com.google.android.as.oss with declared permissions and enabled state.",
-        "A normal bindService probe per exported component, reporting the framework's own SecurityException, null binding or handshake failure.",
-        "The PROVIDE_PRIVATE_COMPUTE_SERVICES checkPermission result as the primary rootless discriminator.",
-        "No binder transaction codes, no AIDL stubs, no reflection and no vending of undocumented interfaces.",
-    )
-
     Section.MODEL_MANAGER -> listOf(
         "Per-feature download, retry and progress controls through the public ML Kit downloadFeature() callback only.",
         "No model catalog claims: model names, sizes and versions are shown only when a public API returns them.",
         "No fabricated provisioning percentages and no toggle that pretends to provision a model.",
         "Download state persists in the diagnostic log with byte counts and exact failures.",
-    )
-
-    Section.PROVISIONING_DIAGNOSTICS -> listOf(
-        "A single “Run full diagnostics” action that executes only safe, public probes.",
-        "The full decision tree over AICore presence/binding, PCS presence and privilege, feature ids and error codes.",
-        "A complete report assembled from the diagnostic bus and exported through SAF.",
-        "A precise statement of the rootless blocker, backed by the evidence collected on the device.",
     )
 
     Section.OFFLINE_INFERENCE -> listOf(
