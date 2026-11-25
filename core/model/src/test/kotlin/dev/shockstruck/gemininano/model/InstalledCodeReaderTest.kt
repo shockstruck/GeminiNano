@@ -1,5 +1,6 @@
 package dev.shockstruck.gemininano.model
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -7,7 +8,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Locale
 
@@ -519,6 +522,228 @@ class InstalledCodeReaderTest {
             setOf("com.google.android.gsf.gservices"),
             InstalledCodeMarkers.MARKERS.filter { it.match == InstalledCodeMarkerMatch.SUBSTRING }.map { it.name }.toSet(),
         )
+    }
+
+    @Test
+    fun presenceUsesTheStringTableWhenNoCodeReferencesTheMarker() {
+        val dex = singleMethodDex { builder ->
+            builder.string("device_personalization_services")
+            builder.string("com.google.android.gms.phenotype.TabOnly")
+            builder.string("content://com.google.android.gsf.gservices/table")
+            SyntheticInsns.units(SyntheticInsns.returnVoid())
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+
+        val namespace = facts.marker("device_personalization_services")!!
+        assertEquals(InstalledCodePresence.PRESENT, namespace.presence)
+        assertEquals(1, namespace.references.size)
+        assertEquals(0, namespace.references.single().methodCount)
+        assertEquals(InstalledCodePresence.PRESENT, facts.marker("com.google.android.gms.phenotype")!!.presence)
+        assertEquals(InstalledCodePresence.PRESENT, facts.marker("com.google.android.gsf.gservices")!!.presence)
+        assertEquals(InstalledCodePresence.ABSENT, facts.marker("ProtectedDownload__enabled")!!.presence)
+    }
+
+    @Test
+    fun resolvesADefaultSetBeforeTheConstString() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;", "Z"))
+            SyntheticInsns.units(
+                SyntheticInsns.const4(1, 0),
+                SyntheticInsns.constString(0, marker),
+                SyntheticInsns.invokeStatic(intArrayOf(0, 1), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.BooleanValue(false)),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun resolvesOneLiteralSharedByThreeFlags() {
+        val markers = listOf(
+            "ProtectedDownload__enabled",
+            "PccSecurity__enable_security_check",
+            "PcsAi__enable_genai_inference_service",
+        )
+        val dex = singleMethodDex { builder ->
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;", "Z"))
+            val first = builder.string(markers[0])
+            val second = builder.string(markers[1])
+            val third = builder.string(markers[2])
+            SyntheticInsns.units(
+                SyntheticInsns.const4(1, 0),
+                SyntheticInsns.constString(0, first),
+                SyntheticInsns.invokeStatic(intArrayOf(0, 1), flag),
+                SyntheticInsns.constString(2, second),
+                SyntheticInsns.invokeStatic(intArrayOf(2, 1), flag),
+                SyntheticInsns.constString(3, third),
+                SyntheticInsns.invokeStatic(intArrayOf(3, 1), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        for (marker in markers) {
+            assertEquals(
+                marker,
+                listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.BooleanValue(false)),
+                facts.marker(marker)!!.references.single().defaults,
+            )
+        }
+    }
+
+    @Test
+    fun reportsUnresolvedForAReachableLabelBetweenLiteralAndInvoke() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;", "Z"))
+            SyntheticInsns.units(
+                SyntheticInsns.ifEqz(2, 5),
+                SyntheticInsns.const4(1, 0),
+                SyntheticInsns.constString(0, marker),
+                SyntheticInsns.nop(),
+                SyntheticInsns.invokeStatic(intArrayOf(0, 1), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedForAnExceptionHandlerBetweenLiteralAndInvoke() {
+        val bytes = singleMethodDexWithTries(
+            tries = listOf(TrySpec(startAddress = 0, insnCount = 3, handlerAddress = 3)),
+        ) { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;", "Z"))
+            SyntheticInsns.units(
+                SyntheticInsns.const4(1, 0),
+                SyntheticInsns.constString(0, marker),
+                SyntheticInsns.nop(),
+                SyntheticInsns.invokeStatic(intArrayOf(0, 1), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+        val dex = InstalledCodeDex.parse(bytes)
+        val code = dex.codeItem(dex.classDef(0).methods[0].codeOffset)
+        assertArrayEquals(intArrayOf(3), dex.handlerAddresses(code))
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to bytes))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedWhenTheDefaultRegisterIsOverwritten() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;", "Z"))
+            SyntheticInsns.units(
+                SyntheticInsns.constString(0, marker),
+                SyntheticInsns.const4(1, 0),
+                SyntheticInsns.moveObject(1, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(0, 1), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun recordsOutOfMemoryErrorAsADexFailure() {
+        val good = singleMethodDex { builder ->
+            val marker = builder.string("feature disabled")
+            SyntheticInsns.units(SyntheticInsns.constString(0, marker), SyntheticInsns.returnVoid())
+        }
+
+        val outcome = readApk(failingApk(good, OutOfMemoryError("synthetic oom")))
+        assertTrue(outcome is InstalledCodeOutcome.Partial)
+        val facts = (outcome as InstalledCodeOutcome.Partial).facts
+        assertEquals(1, facts.failures.size)
+        val failure = facts.failures.single()
+        assertEquals("classes2.dex", failure.dexEntry)
+        assertEquals(OutOfMemoryError::class.java.name, failure.errorClass)
+        assertEquals("synthetic oom", failure.message)
+        assertEquals(InstalledCodePresence.PRESENT, facts.marker("feature disabled")!!.presence)
+        assertEquals(InstalledCodePresence.UNKNOWN, facts.marker("ProtectedDownload__enabled")!!.presence)
+    }
+
+    @Test
+    fun recordsStackOverflowErrorAsADexFailure() {
+        val good = singleMethodDex { builder ->
+            val marker = builder.string("feature disabled")
+            SyntheticInsns.units(SyntheticInsns.constString(0, marker), SyntheticInsns.returnVoid())
+        }
+
+        val outcome = readApk(failingApk(good, StackOverflowError("synthetic stack")))
+        assertTrue(outcome is InstalledCodeOutcome.Partial)
+        val facts = (outcome as InstalledCodeOutcome.Partial).facts
+        assertEquals(1, facts.failures.size)
+        assertEquals(StackOverflowError::class.java.name, facts.failures.single().errorClass)
+        assertEquals(InstalledCodePresence.PRESENT, facts.marker("feature disabled")!!.presence)
+    }
+
+    private fun readApk(vararg apks: InstalledCodeApk): InstalledCodeOutcome =
+        InstalledCodeReader().read(
+            PACKAGE,
+            FakeInstalledCodeInput(
+                mapOf(PACKAGE to InstalledCodePackageInput.Visible(1L, apks.toList())),
+            ),
+        )
+
+    private fun failingApk(goodDex: ByteArray, error: Throwable): InstalledCodeApk =
+        object : InstalledCodeApk {
+            override val id = InstalledCodeApkId("base", InstalledCodeApkKind.BASE)
+
+            override fun forEachEntry(visitor: (InstalledCodeZipEntry) -> Unit) {
+                visitor(InstalledCodeZipEntry("classes.dex", goodDex.size.toLong(), false))
+                visitor(InstalledCodeZipEntry("classes2.dex", 1L, false))
+            }
+
+            override fun openEntry(name: String): InputStream =
+                if (name == "classes2.dex") throw error else ByteArrayInputStream(goodDex)
+
+            override fun sha256(): String = "0".repeat(64)
+        }
+
+    private fun singleMethodDexWithTries(
+        tries: List<TrySpec>,
+        instructions: (SyntheticDexBuilder) -> IntArray,
+    ): ByteArray {
+        val builder = SyntheticDexBuilder(35)
+        val index = builder.method(PROBE, "probe", "V", emptyList())
+        builder.clazz(
+            PROBE,
+            listOf(
+                MethodSpec(
+                    name = "probe",
+                    returnType = "V",
+                    parameters = emptyList(),
+                    methodIndex = index,
+                    instructions = instructions(builder),
+                    tries = tries,
+                ),
+            ),
+        )
+        return builder.build()
     }
 
     private fun read(

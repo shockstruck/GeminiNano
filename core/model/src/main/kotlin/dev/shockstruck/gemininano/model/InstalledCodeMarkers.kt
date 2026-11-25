@@ -62,12 +62,32 @@ internal fun analyseInstalledCodeDex(
     var referenceGroups = 0
     var truncated = false
 
+    fun recordMatch(specIndex: Int, matched: String): ReferenceAccumulator? {
+        val byText = perMarker.getOrPut(specIndex) { LinkedHashMap() }
+        byText[matched]?.let { return it }
+        if (referenceGroups >= limits.maxRecordedReferences) {
+            truncated = true
+            return null
+        }
+        referenceGroups += 1
+        return ReferenceAccumulator(matched).also { byText[matched] = it }
+    }
+
+    for (stringIndex in 0 until dex.stringCount) {
+        val value = dex.string(stringIndex)
+        for ((specIndex, spec) in InstalledCodeMarkers.MARKERS.withIndex()) {
+            val matched = spec.matchedText(value) ?: continue
+            recordMatch(specIndex, matched)
+        }
+    }
+
     for (classIndex in 0 until dex.classCount) {
         val classDef = dex.classDef(classIndex)
         for (encoded in classDef.methods) {
             if (encoded.codeOffset == 0) continue
             val codeItem = dex.codeItem(encoded.codeOffset)
             val instructions = dex.instructions(codeItem).asSequence().toList()
+            val barriers = (dex.branchTargets(codeItem) + dex.handlerAddresses(codeItem)).toSet()
 
             val methodMatches = LinkedHashSet<Pair<Int, String>>()
             val flagOccurrences = mutableListOf<FlagOccurrence>()
@@ -105,23 +125,13 @@ internal fun analyseInstalledCodeDex(
             }
 
             for ((specIndex, matched) in methodMatches) {
-                val byText = perMarker.getOrPut(specIndex) { LinkedHashMap() }
-                val accumulator = byText[matched]
-                if (accumulator == null) {
-                    if (referenceGroups >= limits.maxRecordedReferences) {
-                        truncated = true
-                        continue
-                    }
-                    referenceGroups += 1
-                    byText[matched] = ReferenceAccumulator(matched).also { it.methodCount += 1 }
-                } else {
-                    accumulator.methodCount += 1
-                }
+                val accumulator = recordMatch(specIndex, matched) ?: continue
+                accumulator.methodCount += 1
             }
             for (occurrence in flagOccurrences) {
                 val accumulator = perMarker[occurrence.specIndex]?.get(occurrence.matched) ?: continue
                 accumulator.addDefault(
-                    resolveDefault(dex, instructions, occurrence),
+                    resolveDefault(dex, instructions, occurrence, barriers),
                     limits.maxDefaultsPerReference,
                 )
             }
@@ -189,14 +199,27 @@ private sealed interface Literal {
     data object OtherLiteral : Literal
 }
 
+private data class LiteralState(
+    val literal: Literal,
+    val position: Int,
+)
+
 private fun resolveDefault(
     dex: InstalledCodeDex,
     instructions: List<InstalledCodeInstruction>,
     occurrence: FlagOccurrence,
+    barriers: Set<Int>,
 ): InstalledCodeDefaultValue {
     if (occurrence.register < 0) return InstalledCodeDefaultValue.Unresolved
+    val occurrenceAddress = instructions[occurrence.instructionIndex].addressUnits
+    val blockStart = blockStartIndex(instructions, occurrence.instructionIndex)
+    val literals = HashMap<Int, LiteralState>()
+    for (index in blockStart until occurrence.instructionIndex) {
+        val instruction = instructions[index]
+        if (instruction.isPayload || instruction.isBranch) continue
+        trackLiteral(dex, instruction, literals)
+    }
     val stringRegisters = mutableSetOf(occurrence.register)
-    val literals = HashMap<Int, Literal>()
     var index = occurrence.instructionIndex + 1
     while (index < instructions.size) {
         val instruction = instructions[index]
@@ -206,7 +229,14 @@ private fun resolveDefault(
         }
         if (instruction.isBranch) return InstalledCodeDefaultValue.Unresolved
         if (instruction.isInvoke && instruction.invokeMethodIndex >= 0) {
-            val resolved = resolveFromInvoke(dex, instruction, stringRegisters, literals)
+            val resolved = resolveFromInvoke(
+                dex = dex,
+                instruction = instruction,
+                stringRegisters = stringRegisters,
+                literals = literals,
+                barriers = barriers,
+                occurrenceAddress = occurrenceAddress,
+            )
             if (resolved != null) return resolved
         }
         updateStringRegisters(instruction, stringRegisters)
@@ -217,11 +247,23 @@ private fun resolveDefault(
     return InstalledCodeDefaultValue.Unresolved
 }
 
+private fun blockStartIndex(
+    instructions: List<InstalledCodeInstruction>,
+    occurrenceIndex: Int,
+): Int {
+    for (index in occurrenceIndex - 1 downTo 0) {
+        if (instructions[index].isBranch) return index + 1
+    }
+    return 0
+}
+
 private fun resolveFromInvoke(
     dex: InstalledCodeDex,
     instruction: InstalledCodeInstruction,
     stringRegisters: Set<Int>,
-    literals: Map<Int, Literal>,
+    literals: Map<Int, LiteralState>,
+    barriers: Set<Int>,
+    occurrenceAddress: Int,
 ): InstalledCodeDefaultValue? {
     val registers = instruction.invokeRegisters
     val positions = registers.indices.filter { registers[it] in stringRegisters }
@@ -235,7 +277,13 @@ private fun resolveFromInvoke(
     if (nextIndex >= methodRef.parameterTypes.size) return InstalledCodeDefaultValue.Unresolved
     val word = parameterStarts[nextIndex]
     if (word >= registers.size) return InstalledCodeDefaultValue.Unresolved
-    return literalValue(methodRef.parameterTypes[nextIndex], literals[registers[word]])
+    val state = literals[registers[word]] ?: return InstalledCodeDefaultValue.Unresolved
+    val windowStart = minOf(state.position, occurrenceAddress)
+    val invokeAddress = instruction.addressUnits
+    if (barriers.any { barrier -> barrier > windowStart && barrier <= invokeAddress }) {
+        return InstalledCodeDefaultValue.Unresolved
+    }
+    return literalValue(methodRef.parameterTypes[nextIndex], state.literal)
 }
 
 private fun parameterStartRegisters(
@@ -288,40 +336,44 @@ private fun updateStringRegisters(
 private fun trackLiteral(
     dex: InstalledCodeDex,
     instruction: InstalledCodeInstruction,
-    literals: MutableMap<Int, Literal>,
+    literals: MutableMap<Int, LiteralState>,
 ) {
     val destination = instruction.destinationRegister
     if (destination < 0) return
+    val position = instruction.addressUnits
+    fun put(value: Literal) {
+        literals[destination] = LiteralState(value, position)
+    }
     when {
-        instruction.constKind == InstalledCodeConstKind.STRING -> {
-            val value = instruction.constStringIndex
-            literals[destination] = Literal.StringLiteral(if (value >= 0) dex.string(value) else "")
-        }
+        instruction.constKind == InstalledCodeConstKind.STRING ->
+            put(Literal.StringLiteral(dex.string(instruction.constStringIndex)))
 
         instruction.constKind == InstalledCodeConstKind.INT ->
-            literals[destination] = Literal.IntLiteral(instruction.constIntValue)
+            put(Literal.IntLiteral(instruction.constIntValue))
 
         instruction.constKind == InstalledCodeConstKind.WIDE -> {
-            literals[destination] = Literal.WideLiteral
-            literals[destination + 1] = Literal.WideLiteral
+            literals[destination] = LiteralState(Literal.WideLiteral, position)
+            literals[destination + 1] = LiteralState(Literal.WideLiteral, position)
         }
 
         instruction.constKind == InstalledCodeConstKind.OTHER ->
-            literals[destination] = Literal.OtherLiteral
+            put(Literal.OtherLiteral)
 
         instruction.opcode in 0x01..0x03 -> {
             val source = literals[instruction.moveSourceRegister]
-            if (source == null) literals.remove(destination) else literals[destination] = source
+            if (source == null) literals.remove(destination)
+            else literals[destination] = LiteralState(source.literal, source.position)
         }
 
         instruction.opcode in 0x04..0x06 -> {
-            literals[destination] = Literal.WideLiteral
-            literals[destination + 1] = Literal.WideLiteral
+            literals[destination] = LiteralState(Literal.WideLiteral, position)
+            literals[destination + 1] = LiteralState(Literal.WideLiteral, position)
         }
 
         instruction.isMoveObject -> {
             val source = literals[instruction.moveSourceRegister]
-            if (source == null) literals.remove(destination) else literals[destination] = source
+            if (source == null) literals.remove(destination)
+            else literals[destination] = LiteralState(source.literal, source.position)
         }
 
         else -> {

@@ -21,7 +21,7 @@ class InstalledCodeReader(
     fun read(packageName: String, input: InstalledCodeInput): InstalledCodeOutcome {
         val packageInput = try {
             input.packageFor(packageName)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return InstalledCodeOutcome.ReadError(packageName, e.javaClass.name, messageOf(e))
         }
         if (packageInput !is InstalledCodePackageInput.Visible) {
@@ -51,7 +51,7 @@ class InstalledCodeReader(
             }
             val digest = try {
                 apk.sha256()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val failure = InstalledCodeReadFailure(apk.id, null, e.javaClass.name, messageOf(e))
                 if (apk.id.kind == InstalledCodeApkKind.BASE) {
                     return InstalledCodeOutcome.ReadError(packageName, failure.errorClass, failure.message)
@@ -61,7 +61,7 @@ class InstalledCodeReader(
             }
             val inventory = try {
                 inventoryOf(apk)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val failure = InstalledCodeReadFailure(apk.id, null, e.javaClass.name, messageOf(e))
                 if (apk.id.kind == InstalledCodeApkKind.BASE) {
                     return InstalledCodeOutcome.ReadError(packageName, failure.errorClass, failure.message)
@@ -138,7 +138,7 @@ class InstalledCodeReader(
                         packageInput.versionCode,
                         digests.toList(),
                     )
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     failures += InstalledCodeReadFailure(
                         inventory.apk.id,
                         entry.name,
