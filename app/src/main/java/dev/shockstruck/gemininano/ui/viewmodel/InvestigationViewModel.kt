@@ -3,6 +3,7 @@ package dev.shockstruck.gemininano.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.shockstruck.gemininano.AppGraph
+import dev.shockstruck.gemininano.BuildConfig
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsInput
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReport
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReportBuilder
@@ -29,7 +30,11 @@ import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
 import dev.shockstruck.gemininano.model.PcsBindCatalog
 import dev.shockstruck.gemininano.model.PcsBindPlan
+import dev.shockstruck.gemininano.model.PcsBindProvenance
+import dev.shockstruck.gemininano.model.PcsBindReport
 import dev.shockstruck.gemininano.model.PcsBindResult
+import dev.shockstruck.gemininano.model.PcsBindRow
+import dev.shockstruck.gemininano.model.PcsBindRunPolicy
 import dev.shockstruck.gemininano.model.PcsLaunchOutcome
 import dev.shockstruck.gemininano.model.PcsSurface
 import dev.shockstruck.gemininano.model.PermissionMatrix
@@ -64,8 +69,14 @@ data class InvestigationUiState(
     val promptMessage: String? = null,
     val bindPlan: PcsBindPlan? = null,
     val bindResults: List<PcsBindResult> = emptyList(),
+    /** One row per planned component, with current/earlier/not-run provenance. */
+    val bindRows: List<PcsBindRow> = emptyList(),
+    /** Explicit note when the stored bind history is missing or unreadable. */
+    val bindHistoryNote: String? = null,
     val bindBusy: Boolean = false,
     val bindMessage: String? = null,
+    /** Consent for this one Run Full Diagnostics tap only; never persisted. */
+    val includePcsBindProbe: Boolean = false,
     val launchResults: List<PcsActivityLaunchResult> = emptyList(),
     val launchBusy: Boolean = false,
     val launchMessage: String? = null,
@@ -152,6 +163,14 @@ class InvestigationViewModel(
                 graph.systemFeatureFacts.read()
             }
             val plan = PcsBindCatalog.plan(pcs)
+            val history = withContext(Dispatchers.IO) { graph.pcsBindHistoryStore.load() }
+            val rows = PcsBindReport.rows(
+                plan = plan,
+                history = history.history,
+                currentPcsVersionCode = pcs?.versionCode,
+                appVersionName = BuildConfig.VERSION_NAME,
+                appVersionCode = BuildConfig.VERSION_CODE.toLong(),
+            )
             _state.update {
                 it.copy(
                     loading = false,
@@ -162,8 +181,10 @@ class InvestigationViewModel(
                     systemFeatureReadError = systemFeatures.readErrorLabel,
                     surface = surface,
                     bindPlan = plan,
-                    bindResults = plan.projectedResults(),
-                    bindMessage = bindPlanMessage(plan),
+                    bindResults = PcsBindReport.classifierResults(rows),
+                    bindRows = rows,
+                    bindHistoryNote = history.note,
+                    bindMessage = bindPlanMessage(plan, rows),
                 )
             }
             logMatrix(matrix)
@@ -328,12 +349,29 @@ class InvestigationViewModel(
         }
     }
 
+    /**
+     * Consent for the next Run Full Diagnostics tap only. The flag is in memory and is
+     * consumed (set back to false) as soon as that run starts; it is never persisted.
+     */
+    fun setIncludePcsBindProbe(include: Boolean) {
+        if (_state.value.fullReportBusy) return
+        _state.update { it.copy(includePcsBindProbe = include) }
+    }
+
     /** One explicit action running every safe probe and building the exportable report. */
     fun runFullDiagnostics() {
         val current = _state.value
         if (current.fullReportBusy) return
+        val includeBindProbe = current.includePcsBindProbe
         viewModelScope.launch {
-            _state.update { it.copy(fullReportBusy = true, fullReportMessage = null) }
+            // The consent is consumed by this run and never remembered.
+            _state.update {
+                it.copy(
+                    fullReportBusy = true,
+                    fullReportMessage = null,
+                    includePcsBindProbe = false,
+                )
+            }
             val inspected = withContext(Dispatchers.IO) {
                 graph.packageFactsProvider.inspectPackages()
             }
@@ -346,23 +384,82 @@ class InvestigationViewModel(
             }
             val manifests = readManifests()
             val plan = PcsBindCatalog.plan(pcs)
-            _state.update { current ->
-                val attempted = current.bindResults
-                    .filter { it.outcome.attempted }
-                    .associateBy { it.componentName }
-                current.copy(
+            val pcsVersionCode = pcs?.versionCode
+            val appVersionName = BuildConfig.VERSION_NAME
+            val appVersionCode = BuildConfig.VERSION_CODE.toLong()
+            _state.update { state ->
+                state.copy(
                     matrix = matrix,
                     packages = inspected,
                     manifests = manifests,
                     surface = surface,
                     bindPlan = plan,
-                    bindResults = plan.projectedResults().map { projected ->
-                        attempted[projected.componentName] ?: projected
-                    },
                 )
             }
             logMatrix(matrix)
             logSurface(surface)
+
+            val bindRows: List<PcsBindRow>
+            val bindResults: List<PcsBindResult>
+            val bindHistoryNote: String?
+            if (PcsBindRunPolicy.shouldBind(includeBindProbe, plan.eligibleCount)) {
+                val results = graph.safeBindProbe.probeAll(plan)
+                results.forEach { logBind(it) }
+                val observedAt = System.currentTimeMillis()
+                val history = graph.pcsBindHistoryStore.record(
+                    PcsBindReport.historyEntries(
+                        results = results,
+                        observedAtEpochMillis = observedAt,
+                        appVersionName = appVersionName,
+                        appVersionCode = appVersionCode,
+                        pcsVersionCode = pcsVersionCode,
+                    ),
+                )
+                bindRows = PcsBindReport.rows(
+                    plan = plan,
+                    currentResults = results,
+                    history = history.history,
+                    currentPcsVersionCode = pcsVersionCode,
+                    currentRunAtEpochMillis = observedAt,
+                    appVersionName = appVersionName,
+                    appVersionCode = appVersionCode,
+                )
+                bindResults = PcsBindReport.classifierResults(bindRows)
+                bindHistoryNote = history.note
+                _state.update {
+                    it.copy(
+                        bindResults = bindResults,
+                        bindRows = bindRows,
+                        bindHistoryNote = bindHistoryNote,
+                        bindMessage = bindResultMessage(plan, results),
+                        lastObservationAtEpochMillis = observedAt,
+                    )
+                }
+            } else {
+                val history = withContext(Dispatchers.IO) { graph.pcsBindHistoryStore.load() }
+                bindRows = PcsBindReport.rows(
+                    plan = plan,
+                    history = history.history,
+                    currentPcsVersionCode = pcsVersionCode,
+                    appVersionName = appVersionName,
+                    appVersionCode = appVersionCode,
+                )
+                bindResults = PcsBindReport.classifierResults(bindRows)
+                bindHistoryNote = history.note
+                _state.update {
+                    it.copy(
+                        bindResults = bindResults,
+                        bindRows = bindRows,
+                        bindHistoryNote = bindHistoryNote,
+                        bindMessage = if (bindRows.any { row -> row.provenance == PcsBindProvenance.EARLIER_RUN }) {
+                            "Run Full Diagnostics did not include the bind probe; " +
+                                "stored earlier results are shown with their time."
+                        } else {
+                            bindPlanMessage(plan, bindRows)
+                        },
+                    )
+                }
+            }
 
             probeFeaturesInternal()
             probePromptInternal()
@@ -393,7 +490,9 @@ class InvestigationViewModel(
                     prompt = snapshot.prompt,
                     summarization = summarization,
                     surface = snapshot.surface,
-                    bindResults = snapshot.bindResults,
+                    bindResults = bindResults,
+                    bindRows = bindRows,
+                    bindHistoryNote = bindHistoryNote,
                     offline = snapshot.offline,
                     events = graph.diagnosticBus.snapshot(),
                     packages = inspected,
@@ -417,7 +516,7 @@ class InvestigationViewModel(
                 it.copy(
                     fullReportBusy = false,
                     fullReport = report,
-                    fullReportMessage = "Report ready. Export it as JSON or text; no download or bind was performed.",
+                    fullReportMessage = "Report ready. Export it as JSON or text; no download was performed.",
                     lastObservationAtEpochMillis = null,
                 )
             }
@@ -433,14 +532,34 @@ class InvestigationViewModel(
             _state.update { it.copy(bindBusy = true, bindMessage = null) }
             val results = graph.safeBindProbe.probeAll(plan)
             results.forEach { logBind(it) }
+            val observedAt = System.currentTimeMillis()
+            val pcsVersionCode = pcsVersionCode(_state.value.packages)
+            val history = graph.pcsBindHistoryStore.record(
+                PcsBindReport.historyEntries(
+                    results = results,
+                    observedAtEpochMillis = observedAt,
+                    appVersionName = BuildConfig.VERSION_NAME,
+                    appVersionCode = BuildConfig.VERSION_CODE.toLong(),
+                    pcsVersionCode = pcsVersionCode,
+                ),
+            )
+            val rows = PcsBindReport.rows(
+                plan = plan,
+                currentResults = results,
+                history = history.history,
+                currentPcsVersionCode = pcsVersionCode,
+                currentRunAtEpochMillis = observedAt,
+                appVersionName = BuildConfig.VERSION_NAME,
+                appVersionCode = BuildConfig.VERSION_CODE.toLong(),
+            )
             _state.update {
                 it.copy(
                     bindBusy = false,
-                    bindResults = results,
-                    bindMessage = "Bind probe finished: ${results.count { r -> r.outcome == PcsBindOutcome.BINDER_RETURNED }} " +
-                        "of ${plan.eligibleCount} eligible services returned a binder; every accepted bind " +
-                        "was unbound once. These are this app's own results, not AICore's access.",
-                    lastObservationAtEpochMillis = System.currentTimeMillis(),
+                    bindResults = PcsBindReport.classifierResults(rows),
+                    bindRows = rows,
+                    bindHistoryNote = history.note,
+                    bindMessage = bindResultMessage(plan, results),
+                    lastObservationAtEpochMillis = observedAt,
                 )
             }
             recomputeDecision()
@@ -477,17 +596,30 @@ class InvestigationViewModel(
         }
     }
 
-    private fun bindPlanMessage(plan: PcsBindPlan): String = when {
+    private fun bindPlanMessage(plan: PcsBindPlan, rows: List<PcsBindRow>): String = when {
         !plan.componentsRead ->
             "PCS components were not read; each bind row is NOT READ and none was attempted."
 
         plan.eligibleCount == 0 ->
             "No PCS service is eligible; every row is NOT RUN or reports why no bind was attempted."
 
+        rows.any { it.provenance != PcsBindProvenance.NOT_RUN } ->
+            "${plan.eligibleCount} PCS service(s) are eligible. Rows without an observation are NOT RUN; " +
+                "stored earlier results keep their own time. Run the bind button below or tick the option " +
+                "in Run Full Diagnostics."
+
         else ->
             "${plan.eligibleCount} PCS service(s) are eligible. Each row is NOT RUN until you tap the bind button; " +
                 "a result would be this app's own bind, not AICore's access."
     }
+
+    private fun bindResultMessage(plan: PcsBindPlan, results: List<PcsBindResult>): String =
+        "Bind probe finished: ${results.count { r -> r.outcome == PcsBindOutcome.BINDER_RETURNED }} " +
+            "of ${plan.eligibleCount} eligible services returned a binder; every accepted bind " +
+            "was unbound once. These are this app's own results, not AICore's access."
+
+    private fun pcsVersionCode(packages: List<PackageFacts>): Long? =
+        packages.firstOrNull { it.packageName == PlatformPrincipals.PCS }?.versionCode
 
     fun exportManager(): dev.shockstruck.gemininano.data.LogExportManager = graph.logExportManager()
 

@@ -68,10 +68,13 @@ updated.
    never toggles Wi-Fi or mobile data and cannot control AICore's or PCS's network use, so a
    success row is evidence of offline operation **only** when you disabled connectivity yourself
    and checked it was off. A success with connectivity on is not offline evidence.
-5. **Private Compute Services → Run bind probe.** This is a separate explicit action; Run Full
-   Diagnostics does not trigger it. The rows are planned from the installed PCS package's own
-   exported, effectively enabled, permission-free services (the current build's
-   `com.google.android.apps.miphone.astrea.*` names; the older open-source names are aliases).
+5. **Private Compute Services → Run bind probe.** Two paths run the same probe: the **Run bind
+   probe (N eligible)** button on this screen, or the **Include PCS bind probe** checkbox beside
+   **Run Full Diagnostics** in step 7. That checkbox is unchecked by default, and ticking it and
+   tapping Run is consent for that one run only; it is never remembered. The rows are planned
+   from the installed PCS package's own exported, effectively enabled, permission-free services
+   (the current build's `com.google.android.apps.miphone.astrea.*` names; the older open-source
+   names are aliases).
    Before you tap, every planned bind reads **NOT RUN**; a known service the package does not
    declare says **not declared**, which is different from declared-but-not-exported and from
    components-not-read. Tap **Run bind probe (N eligible)** and record, per service: the bind
@@ -84,7 +87,12 @@ updated.
    worker thread, never the main thread, so a hung remote cannot delay the 3-second timeout;
    if that read is still pending at the timeout, the binder outcome is kept and the read is
    recorded as **timed out**. **Its result is this app's own bind attempt and never proves
-   AICore's access to PCS.**
+   AICore's access to PCS.** Every row separates binding (observed) from RPC authorization
+   (`not tested: no transaction is sent`) and provisioning (`not tested`), and is marked
+   **current run**, **earlier run** with its time, or **not run**. Observations are kept in the
+   app's private storage, newest last and at most five per component, with the wall-clock time,
+   app version and PCS versionCode; a later `NOT RUN` never replaces an earlier observation. A
+   stored row from a different PCS versionCode is labelled and is never classifier input.
 6. **Private Compute Services → launch controls.** **Open PCS settings** and **Open Network
    usage log** are separate explicit taps, shown only when the installed package reports the
    activity as exported, effectively enabled and permission-free. The item-details activity is
@@ -92,9 +100,12 @@ updated.
    guessed. Each tap records resolved/launched, `ActivityNotFoundException`,
    `SecurityException` or another error. Nothing is read back from another app's screen.
 7. **Provisioning Diagnostics → Run Full Diagnostics and export.** Do this **after** the bind and
-   launch steps so the snapshot contains them. Tap **Run Full Diagnostics**, wait for
-   `Report ready`, then **Export JSON** and **Export text** (a Storage Access Framework file
-   picker, or the export directory configured in Settings). The JSON report contains:
+   launch steps so the snapshot contains them, or tick **Include PCS bind probe** beside the
+   button to run the bind first inside the same action. The option is unchecked by default;
+   ticking it and tapping Run is consent for that one run only and is never remembered. Tap
+   **Run Full Diagnostics**, wait for `Report ready`, then **Export JSON** and **Export text**
+   (a Storage Access Framework file picker, or the export directory configured in Settings).
+   The JSON report contains:
    the report schema and generation time; the app identity; device facts; the full permission
    matrix with *requested*, `checkPermission`, the `requestedPermissionsFlags` bit and the
    `getPermissionInfo` declaration for every matrix cell; a permission-verification block with
@@ -102,9 +113,12 @@ updated.
    `BIND_SERVICE`, `QUERY_ALL_PACKAGES` and the matrix columns; every GenAI feature row with
    `probeExecuted` and `featureAvailable` kept separate (including an explicit `NOT PROBED` row
    when no result exists); the four Prompt configs on the same basis; the retained summarization
-   probe; the PCS surface and launch targets; every planned bind row — `NOT RUN` if it was not
-   attempted — with bind flag, outcome, guarded descriptor, binder label, exception, elapsed time
-   and unbind count (including `descriptorTimedOut`); the launch results; the installed-manifest
+   probe; the PCS surface and launch targets; every bind row with its provenance (`current run`,
+   `earlier run at <time>`, or `not run`), the observed binding fact, `RPC authorization: not
+   tested: no transaction is sent` and `provisioning: not tested`, plus bind flag, outcome,
+   guarded descriptor, binder label, exception, elapsed time and unbind count (including
+   `descriptorTimedOut`); the note when stored history was missing or unreadable; the launch
+   results; the installed-manifest
    facts for AICore, PCS and ASI as the installed-manifest reader decoded them (declared package, signer
    SHA-256, declared and used permissions, `android:privateComputeCore` components, the
    component-access/association policy and its package names and certificate digests, and
@@ -117,7 +131,7 @@ updated.
    first-install and last-update times beside AICore's first-install time. If a bind or launch
    finishes after the report was generated, the report card says the report predates it and
    the export buttons stay disabled until you run Full Diagnostics again. The action performs
-   no download and no bind.
+   no download, and it binds only when the include-bind-probe option was ticked.
 8. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
    convenient); the Diagnostic Logs JSON export if you want the event stream; the AICore and PCS
    versions from Overview; the permission matrix (already in the JSON export); the
@@ -194,13 +208,13 @@ and for INDETERMINATE the still-open candidates each with its missing observatio
 | Overview | Implemented: AICore/PCS presence and version, real summarization probe, most recent failure, decision-tree recommendation, retained summarization test |
 | System Components | Implemented: version, installer, signing SHA-256, SDK levels, requested permissions, observable grants, declared/exported components, metadata, probed intent actions |
 | AICore Features | Implemented: independent Prompt probe over the four `ModelConfig` combinations (`STABLE/FAST`, `STABLE/FULL`, `PREVIEW/FAST`, `PREVIEW/FULL`) plus the full public GenAI matrix — Rewriting, Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech Translation and Text to Speech. Each row is an isolated probe with status, feature id, error class/code/message, base model name or signature only when returned, latency, and a download button only when ML Kit says DOWNLOADABLE. The retained summarization status is shown separately |
-| Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, and safe `bindService` outcomes for the services the installed PCS declares (the current `astrea` names first; the open-source names are aliases). PCS settings and the network usage log have explicit launch controls; the item-details activity is listed but not launched. PCS settings are opened by explicit component resolution, not an `ACTION_APPLICATION_PREFERENCES` intent |
+| Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, and safe `bindService` outcomes for the services the installed PCS declares (the current `astrea` names first; the open-source names are aliases). Bind observations persist locally (last five per component) and each row is marked current run, earlier run with its time, or not run, with binding, RPC authorization and provisioning kept as three separate facts. PCS settings and the network usage log have explicit launch controls; the item-details activity is listed but not launched. PCS settings are opened by explicit component resolution, not an `ACTION_APPLICATION_PREFERENCES` intent |
 | Model Manager | Implemented: per-feature observed status, explicit download only when DOWNLOADABLE, progress from the public callbacks, retry after failure, no catalog, no automatic download, no invented cancel |
-| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report |
+| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report. Its **Include PCS bind probe** option is unchecked by default, applies to that run only and is never remembered; ticked, the bind finishes before the report is built |
 | Offline Inference | Implemented: one short fixed-input inference per AVAILABLE feature with exact failures and latency; the user must disable connectivity externally and no offline success is claimed from this app alone |
 | Privacy | Implemented |
 | Diagnostic Logs | Implemented: bounded local event bus, search/filter, copy, JSON and text export through SAF, redaction |
-| Settings | Implemented: theme, SAF export directory, log verbosity, reset probes, provenance |
+| Settings | Implemented: theme, SAF export directory, log verbosity, reset probes, a clear control for the stored PCS bind history, provenance |
 
 ## Build
 
@@ -258,9 +272,15 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   with a 3-second wait and exactly one `unbindService`, recording the outcome, the guarded
   descriptor read (on a worker thread) and its own timing, binder-alive state, exception,
   disconnects and elapsed time. It sends no binder transaction, builds no AIDL stub, calls no
-  `asInterface` and uses no transaction code. Job-bound services are static facts only.
-  Launch controls for PCS settings and the network usage log are explicit taps; the
-  item-details activity is not launched because its extras are unknown.
+  `asInterface` and uses no transaction code. Observations persist in app-private storage, at
+  most five per component, with their wall-clock time, app version and PCS versionCode; each
+  row is marked current run, earlier run with its time, or not run, and shows binding
+  (observed), RPC authorization (`not tested: no transaction is sent`) and provisioning
+  (`not tested`) separately. A stored row from a different PCS versionCode is labelled and is
+  never classifier input; corrupt or missing storage yields no history and an explicit note.
+  Job-bound services are static facts only. Launch controls for PCS settings and the network
+  usage log are explicit taps; the item-details activity is not launched because its extras
+  are unknown.
 - **Feature matrix.** Eight independent clients over the public SDKs: Rewriting,
   Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech
   Translation and Text to Speech. Each probe records only what its own client returned;
@@ -288,15 +308,16 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   tells the user to disable connectivity externally; it never toggles a radio.
 - **Run Full Diagnostics.** One explicit action re-inspects packages, rebuilds the
   permission matrix, probes every GenAI feature status, the four Prompt configs and the
-  retained summarization probe, records the PCS surface, includes any bind results the
-  user already ran, and builds JSON and text reports through the existing SAF export
-  path. Each probe is isolated and bounded by a 30-second timeout. The report separates
+  retained summarization probe, records the PCS surface, includes stored bind rows with
+  their provenance, and builds JSON and text reports through the existing SAF export
+  path. An unchecked-by-default **Include PCS bind probe** option applies to that one run
+  only and is never remembered; when ticked, the same bind probe runs and finishes before
+  the report is built. Unticked, the action performs no bind. Each probe is isolated and bounded by a 30-second timeout. The report separates
   "probe executed" from "feature available" for every feature and Prompt row, lists every
   explicitly untested operation, names the AICore/PCS/ASI/GMS versionCode and signer
   SHA-256, includes the relevant `getSystemAvailableFeatures` names, and keeps full
   permission enumeration to AICore and PCS. Bind rows carry the holder's first-install and
-  last-update times beside AICore's first-install time. It performs no download and no
-  bind.
+  last-update times beside AICore's first-install time. It performs no download.
 - **Decision line.** Built from the evidence above: PCS PCC state, Prompt 606/AVAILABLE
   results and the gRPC bind outcome. The label is always
   `622 — AICore AIDL constant SAPI_SUMMARIZATION_EN_2 (decompiled source, not a model); model unknown.`

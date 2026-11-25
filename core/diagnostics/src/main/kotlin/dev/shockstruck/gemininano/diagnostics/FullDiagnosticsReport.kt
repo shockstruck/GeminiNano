@@ -9,7 +9,9 @@ import dev.shockstruck.gemininano.model.OfflineInferenceResult
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
+import dev.shockstruck.gemininano.model.PcsBindProvenance
 import dev.shockstruck.gemininano.model.PcsBindResult
+import dev.shockstruck.gemininano.model.PcsBindRow
 import dev.shockstruck.gemininano.model.PcsSurface
 import dev.shockstruck.gemininano.model.PermissionGrantFacts
 import dev.shockstruck.gemininano.model.PermissionMatrix
@@ -30,6 +32,14 @@ data class FullDiagnosticsInput(
     val summarization: SummarizationProbeResult?,
     val surface: PcsSurface?,
     val bindResults: List<PcsBindResult>,
+    /**
+     * Bind rows with current/earlier/not-run provenance and the three separated facts.
+     * When empty, rows are derived from [bindResults] so a stored-result call site keeps
+     * working without inventing provenance.
+     */
+    val bindRows: List<PcsBindRow> = emptyList(),
+    /** Explicit note when app-private bind storage was missing or unreadable. */
+    val bindHistoryNote: String? = null,
     val offline: List<OfflineInferenceResult>,
     val events: List<DiagnosticEvent>,
     /** Full package facts, so every requested permission can be exported with all sources. */
@@ -107,7 +117,9 @@ class FullDiagnosticsReportBuilder {
         out.append("  \"pcs\": ")
         out.append(pcsJson(input.surface)).append(",\n")
         out.append("  \"pcsBind\": ")
-        out.append(array(input.bindResults) { bindJson(it) }).append(",\n")
+        out.append(array(effectiveRows(input)) { bindRowJson(it) }).append(",\n")
+        out.append("  \"pcsBindHistoryNote\": ")
+        out.append(quote(input.bindHistoryNote)).append(",\n")
         out.append("  \"pcsLaunches\": ")
         out.append(array(input.launchResults) { launchJson(it) }).append(",\n")
         out.append("  \"manifests\": ")
@@ -282,15 +294,30 @@ class FullDiagnosticsReportBuilder {
         }
 
         out.appendLine()
-        out.append("== PCS bind results (only if the user ran the separate bind probe) ==\n")
-        if (input.bindResults.isEmpty()) {
+        out.append("== PCS bind results (binding observed; RPC authorization and provisioning not tested) ==\n")
+        val bindRows = effectiveRows(input)
+        if (bindRows.isEmpty()) {
             out.append("not run: no bind plan was collected\n")
         } else {
-            input.bindResults.forEach { result ->
-                out.append(result.componentName).append(": ").append(result.outcome.label)
-                result.role?.let { out.append(" | role=").append(it) }
-                result.declaredName?.let { out.append(" | declared=").append(it) }
-                result.requiredPermission?.let { out.append(" | requiredPermission=").append(it) }
+            bindRows.forEach { row ->
+                val result = row.result
+                out.append(result.componentName).append(": ").append(row.provenance.label)
+                row.observedAtEpochMillis?.let {
+                    out.append(" at ").append(DiagnosticFormatting.formatTimestamp(it))
+                }
+                row.appVersionName?.let { out.append(" | app=").append(it) }
+                row.pcsVersionLabel?.let { out.append(" | ").append(it) }
+                out.append('\n')
+                out.append("  binding (observed): ").append(row.bindingFact).append('\n')
+                out.append("  RPC authorization: ").append(row.rpcAuthorizationFact).append('\n')
+                out.append("  provisioning: ").append(row.provisioningFact).append('\n')
+                out.append("  ")
+                result.role?.let { out.append("role=").append(it).append(" | ") }
+                result.declaredName?.let { out.append("declared=").append(it).append(" | ") }
+                result.requiredPermission?.let {
+                    out.append("requiredPermission=").append(it).append(" | ")
+                }
+                out.append("outcome=").append(result.outcome.label)
                 out.append(" | attempted=").append(result.outcome.attempted)
                 out.append(" | bindFlag=").append(result.bindFlag)
                 if (result.interfaceDescriptor != null) {
@@ -309,6 +336,9 @@ class FullDiagnosticsReportBuilder {
                 out.append(" | elapsed=").append(result.elapsedMillis).append("ms\n")
             }
             out.append("Note: each result belongs to this app's own bind attempt; it does not prove AICore's access to PCS.\n")
+        }
+        input.bindHistoryNote?.let { note ->
+            out.append("History: ").append(note).append('\n')
         }
 
         out.appendLine()
@@ -723,26 +753,64 @@ class FullDiagnosticsReportBuilder {
             "}}"
     }
 
-    private fun bindJson(result: PcsBindResult): String = "{" +
-        "\"componentName\": " + quote(result.componentName) + ", " +
-        "\"outcome\": " + quote(result.outcome.label) + ", " +
-        "\"attempted\": " + result.outcome.attempted + ", " +
-        "\"role\": " + quote(result.role) + ", " +
-        "\"declaredName\": " + quote(result.declaredName) + ", " +
-        "\"requiredPermission\": " + quote(result.requiredPermission) + ", " +
-        "\"bindFlag\": " + quote(result.bindFlag) + ", " +
-        "\"binderAlive\": " + (result.binderAlive?.toString() ?: "null") + ", " +
-        "\"binder\": " + quote(result.binderLabel) + ", " +
-        "\"descriptorReadMillis\": " + (result.descriptorReadMillis?.toString() ?: "null") + ", " +
-        "\"descriptorErrorClass\": " + quote(result.descriptorErrorClass) + ", " +
-        "\"descriptorErrorMessage\": " + quote(result.descriptorErrorMessage) + ", " +
-        "\"descriptorTimedOut\": " + result.descriptorTimedOut + ", " +
-        "\"exceptionClass\": " + quote(result.exceptionClass) + ", " +
-        "\"exceptionMessage\": " + quote(result.exceptionMessage) + ", " +
-        "\"interfaceDescriptor\": " + quote(result.interfaceDescriptor) + ", " +
-        "\"elapsedMillis\": " + result.elapsedMillis + ", " +
-        "\"unbindCalls\": " + result.unbindCalls +
-        "}"
+    private fun bindRowJson(row: PcsBindRow): String {
+        val result = row.result
+        return "{" +
+            "\"componentName\": " + quote(result.componentName) + ", " +
+            "\"provenance\": " + quote(row.provenance.label) + ", " +
+            "\"observedAt\": " +
+            quote(row.observedAtEpochMillis?.let { DiagnosticFormatting.formatIsoTimestamp(it) }) + ", " +
+            "\"observedAtEpochMillis\": " +
+            (row.observedAtEpochMillis?.toString() ?: "null") + ", " +
+            "\"appVersionName\": " + quote(row.appVersionName) + ", " +
+            "\"appVersionCode\": " + (row.appVersionCode?.toString() ?: "null") + ", " +
+            "\"pcsVersionCode\": " +
+            ((row.storedPcsVersionCode ?: row.currentPcsVersionCode)?.toString() ?: "null") + ", " +
+            "\"currentPcsVersionCode\": " +
+            (row.currentPcsVersionCode?.toString() ?: "null") + ", " +
+            "\"pcsVersionMismatch\": " + row.pcsVersionMismatch + ", " +
+            "\"classifierInput\": " + row.classifierEligible + ", " +
+            "\"binding\": " + quote(row.bindingFact) + ", " +
+            "\"rpcAuthorization\": " + quote(row.rpcAuthorizationFact) + ", " +
+            "\"provisioning\": " + quote(row.provisioningFact) + ", " +
+            "\"outcome\": " + quote(result.outcome.label) + ", " +
+            "\"attempted\": " + result.outcome.attempted + ", " +
+            "\"role\": " + quote(result.role) + ", " +
+            "\"declaredName\": " + quote(result.declaredName) + ", " +
+            "\"requiredPermission\": " + quote(result.requiredPermission) + ", " +
+            "\"bindFlag\": " + quote(result.bindFlag) + ", " +
+            "\"binderAlive\": " + (result.binderAlive?.toString() ?: "null") + ", " +
+            "\"binder\": " + quote(result.binderLabel) + ", " +
+            "\"descriptorReadMillis\": " + (result.descriptorReadMillis?.toString() ?: "null") + ", " +
+            "\"descriptorErrorClass\": " + quote(result.descriptorErrorClass) + ", " +
+            "\"descriptorErrorMessage\": " + quote(result.descriptorErrorMessage) + ", " +
+            "\"descriptorTimedOut\": " + result.descriptorTimedOut + ", " +
+            "\"exceptionClass\": " + quote(result.exceptionClass) + ", " +
+            "\"exceptionMessage\": " + quote(result.exceptionMessage) + ", " +
+            "\"interfaceDescriptor\": " + quote(result.interfaceDescriptor) + ", " +
+            "\"elapsedMillis\": " + result.elapsedMillis + ", " +
+            "\"unbindCalls\": " + result.unbindCalls +
+            "}"
+    }
+
+    /** Explicit rows win; otherwise the legacy bind results become current/not-run rows. */
+    private fun effectiveRows(input: FullDiagnosticsInput): List<PcsBindRow> =
+        if (input.bindRows.isNotEmpty()) {
+            input.bindRows
+        } else {
+            input.bindResults.map { result ->
+                PcsBindRow(
+                    componentName = result.componentName,
+                    role = result.role,
+                    result = result,
+                    provenance = if (result.outcome.attempted) {
+                        PcsBindProvenance.CURRENT_RUN
+                    } else {
+                        PcsBindProvenance.NOT_RUN
+                    },
+                )
+            }
+        }
 
     private fun launchJson(result: PcsActivityLaunchResult): String = "{" +
         "\"label\": " + quote(result.label) + ", " +
@@ -822,9 +890,11 @@ class FullDiagnosticsReportBuilder {
             .filter { it.status == FeatureStatusKind.NOT_PROBED }
             .forEach { add("Prompt ${it.config.label}") }
         if (input.summarization == null) add("Summarization probe")
-        input.bindResults.filter { !it.outcome.attempted }.forEach {
-            add("Bind ${it.componentName} (${it.outcome.label})")
-        }
+        effectiveRows(input)
+            .filter { it.provenance == PcsBindProvenance.NOT_RUN && !it.result.outcome.attempted }
+            .forEach {
+                add("Bind ${it.componentName} (${it.result.outcome.label})")
+            }
         input.surface?.launchTargets.orEmpty().forEach { target ->
             val launched = input.launchResults.any { it.className == target.className }
             if (!target.launchable) {

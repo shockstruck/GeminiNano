@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -19,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,6 +31,8 @@ import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.diagnostics.DiagnosticFormatting
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFeature
+import dev.shockstruck.gemininano.model.PcsBindProvenance
+import dev.shockstruck.gemininano.model.PcsBindRunPolicy
 import dev.shockstruck.gemininano.ui.components.KeyValueRow
 import dev.shockstruck.gemininano.ui.components.PcsBindCard
 import dev.shockstruck.gemininano.ui.components.PcsSurfaceCard
@@ -119,7 +123,7 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
         item {
             SectionCard(
                 title = "Run full diagnostics",
-                subtitle = "One explicit action; safe probes only, no download and no bind.",
+                subtitle = "One explicit action; safe probes only, no download. The bind probe runs only when ticked.",
             ) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -139,11 +143,24 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                         enabled = state.fullReport != null && !state.reportStale,
                     ) { Text("Export text") }
                 }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = state.includePcsBindProbe,
+                        onCheckedChange = viewModel::setIncludePcsBindProbe,
+                        enabled = !state.anyProbeBusy,
+                    )
+                    Text(
+                        text = PcsBindRunPolicy.OPTION_LABEL,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 Text(
-                    text = "The action re-inspects packages, rebuilds the permission matrix, probes " +
-                        "every GenAI feature status and the four Prompt configs, records the PCS " +
-                        "surface and includes the existing diagnostic snapshot. The PCS bindService " +
-                        "probe stays a separate explicit tap below.",
+                    text = "Ticking this and tapping Run is consent for this run only; it is never " +
+                        "remembered. The probe does one bindService per eligible PCS service, waits up " +
+                        "to 3 seconds and unbinds once, before the report is built. Unticked, this " +
+                        "action performs no bind. The separate bind button below stays available.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -157,9 +174,19 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                     KeyValueRow("Prompt configs", state.prompt.size.toString())
                     KeyValueRow("Permission cells", state.matrix?.observations?.size?.toString() ?: "0")
                     KeyValueRow("Diagnostic events", graph.diagnosticBus.snapshot().size.toString())
+                    val currentRows = state.bindRows.count {
+                        it.provenance == PcsBindProvenance.CURRENT_RUN
+                    }
+                    val earlierRows = state.bindRows.count {
+                        it.provenance == PcsBindProvenance.EARLIER_RUN
+                    }
                     KeyValueRow(
-                        "PCS bind results",
-                        if (state.bindResults.isEmpty()) "not run" else state.bindResults.size.toString(),
+                        "PCS bind rows",
+                        when {
+                            state.bindRows.isEmpty() -> "not run"
+                            else -> "${state.bindRows.size} rows · " +
+                                "$currentRows current run · $earlierRows earlier run"
+                        },
                     )
                     KeyValueRow("Format", "JSON and text, through the existing SAF export path")
                 }
@@ -229,9 +256,10 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
         }
         item {
             PcsBindCard(
-                results = state.bindResults,
+                rows = state.bindRows,
                 eligibleCount = state.eligibleBindCount,
                 busy = state.bindBusy,
+                historyNote = state.bindHistoryNote,
                 message = state.bindMessage,
                 onRun = viewModel::runBindProbe,
             )

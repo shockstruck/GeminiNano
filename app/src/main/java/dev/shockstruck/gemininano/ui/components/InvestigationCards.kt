@@ -17,13 +17,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.shockstruck.gemininano.diagnostics.DiagnosticFormatting
 import dev.shockstruck.gemininano.diagnostics.ProvisioningDecision
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
 import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
-import dev.shockstruck.gemininano.model.PcsBindResult
+import dev.shockstruck.gemininano.model.PcsBindProvenance
+import dev.shockstruck.gemininano.model.PcsBindRow
 import dev.shockstruck.gemininano.model.PcsSurface
 import dev.shockstruck.gemininano.model.PermissionMatrix
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
@@ -337,9 +339,10 @@ fun PcsSurfaceCard(
 
 @Composable
 fun PcsBindCard(
-    results: List<PcsBindResult>,
+    rows: List<PcsBindRow>,
     eligibleCount: Int,
     busy: Boolean,
+    historyNote: String?,
     message: String?,
     onRun: () -> Unit,
     modifier: Modifier = Modifier,
@@ -347,7 +350,7 @@ fun PcsBindCard(
     SectionCard(
         title = "Safe bind probe",
         modifier = modifier,
-        subtitle = "bindService(BIND_AUTO_CREATE) once per eligible service, 3-second wait, one unbind.",
+        subtitle = "bindService(BIND_AUTO_CREATE) once per eligible service, 3-second wait, one unbind; results persist locally.",
     ) {
         TextButton(onClick = onRun, enabled = !busy && eligibleCount > 0) {
             Text(
@@ -366,43 +369,71 @@ fun PcsBindCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (results.isEmpty()) {
+        historyNote?.let { note ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (rows.isEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("No bind plan has been collected yet.", style = MaterialTheme.typography.bodyMedium)
         }
-        results.forEach { result ->
+        rows.forEach { row ->
+            val result = row.result
             Spacer(Modifier.height(10.dp))
             HorizontalDivider()
             Spacer(Modifier.height(6.dp))
             Text(
-                text = (result.role?.let { "$it · " } ?: "") + result.componentName,
+                text = (row.role?.let { "$it · " } ?: "") + row.componentName,
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
             )
             StatusBadge(
-                text = result.outcome.label.uppercase(),
-                containerColor = if (result.outcome == PcsBindOutcome.BINDER_RETURNED) {
+                text = provenanceBadge(row),
+                containerColor = if (row.provenance == PcsBindProvenance.CURRENT_RUN &&
+                    result.outcome == PcsBindOutcome.BINDER_RETURNED
+                ) {
                     MaterialTheme.colorScheme.secondaryContainer
                 } else {
                     MaterialTheme.colorScheme.surfaceVariant
                 },
-                contentColor = if (result.outcome == PcsBindOutcome.BINDER_RETURNED) {
+                contentColor = if (row.provenance == PcsBindProvenance.CURRENT_RUN &&
+                    result.outcome == PcsBindOutcome.BINDER_RETURNED
+                ) {
                     MaterialTheme.colorScheme.onSecondaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
-            KeyValueRow("Attempted", if (result.outcome.attempted) "yes" else "no")
-            KeyValueRow("Bind flag", result.bindFlag, monospace = true)
-            result.declaredName?.let { KeyValueRow("Declared name", it, monospace = true) }
-            result.requiredPermission?.let { KeyValueRow("Required permission", it, monospace = true) }
-            KeyValueRow("Elapsed", "${result.elapsedMillis} ms")
+            row.observedAtEpochMillis?.let { observedAt ->
+                KeyValueRow(
+                    "Observed",
+                    DiagnosticFormatting.formatTimestamp(observedAt) +
+                        (row.appVersionName?.let { " · app $it" } ?: ""),
+                )
+            }
+            row.pcsVersionLabel?.let { label ->
+                KeyValueRow("PCS version", label, isUnknown = row.pcsVersionMismatch)
+            }
+            KeyValueRow("Binding (observed)", row.bindingFact)
+            KeyValueRow("RPC authorization", row.rpcAuthorizationFact)
+            KeyValueRow("Provisioning", row.provisioningFact)
             if (result.outcome.attempted) {
+                KeyValueRow("Bind flag", result.bindFlag, monospace = true)
+                result.declaredName?.let { KeyValueRow("Declared name", it, monospace = true) }
+                result.requiredPermission?.let {
+                    KeyValueRow("Required permission", it, monospace = true)
+                }
+                KeyValueRow("Elapsed", "${result.elapsedMillis} ms")
                 val descriptor = result.interfaceDescriptor
                 KeyValueRow(
                     label = "Binder descriptor",
                     value = when {
+                        result.descriptorTimedOut -> "read timed out"
                         result.descriptorErrorClass != null -> "read failed"
                         descriptor == null -> "null"
                         descriptor.isEmpty() -> "empty"
@@ -413,7 +444,8 @@ fun PcsBindCard(
                 KeyValueRow(
                     label = "Binder",
                     value = result.binderLabel,
-                    isUnknown = result.binderAlive == null && result.outcome != PcsBindOutcome.NULL_BINDING,
+                    isUnknown = result.binderAlive == null &&
+                        result.outcome != PcsBindOutcome.NULL_BINDING,
                 )
                 result.descriptorReadMillis?.let {
                     KeyValueRow("Descriptor read", "$it ms")
@@ -424,19 +456,19 @@ fun PcsBindCard(
                 result.descriptorErrorMessage?.let {
                     KeyValueRow("Descriptor message", it, monospace = true)
                 }
-            }
-            result.exceptionClass?.let {
-                KeyValueRow("Exception", it, monospace = true)
-            }
-            result.exceptionMessage?.let {
-                KeyValueRow("Message", it, monospace = true)
-            }
-            KeyValueRow("Unbind calls", result.unbindCalls.toString())
-            if (result.serviceDisconnected) {
-                KeyValueRow("onServiceDisconnected", "observed")
-            }
-            if (result.bindingDied) {
-                KeyValueRow("onBindingDied", "observed")
+                result.exceptionClass?.let {
+                    KeyValueRow("Exception", it, monospace = true)
+                }
+                result.exceptionMessage?.let {
+                    KeyValueRow("Message", it, monospace = true)
+                }
+                KeyValueRow("Unbind calls", result.unbindCalls.toString())
+                if (result.serviceDisconnected) {
+                    KeyValueRow("onServiceDisconnected", "observed")
+                }
+                if (result.bindingDied) {
+                    KeyValueRow("onBindingDied", "observed")
+                }
             }
         }
         message?.let { text ->
@@ -444,6 +476,12 @@ fun PcsBindCard(
             Text(text, style = MaterialTheme.typography.bodyMedium)
         }
     }
+}
+
+private fun provenanceBadge(row: PcsBindRow): String = when (row.provenance) {
+    PcsBindProvenance.CURRENT_RUN -> "CURRENT RUN"
+    PcsBindProvenance.EARLIER_RUN -> "EARLIER RUN"
+    PcsBindProvenance.NOT_RUN -> row.result.outcome.label.uppercase()
 }
 
 @Composable
