@@ -10,6 +10,102 @@ pretend to provision anything it cannot.
 Derived from the public [anandgaur22/GeminiNano](https://github.com/anandgaur22/GeminiNano)
 demo. Internal experimental derivative; not affiliated with Google.
 
+## Install on the device (no ADB required)
+
+The deliverable is the `offline` debug build, versionName **`0.4.0-offline`** (versionCode 4),
+applicationId `dev.shockstruck.gemininano`. The `Build offline debug APK` workflow builds it on
+every push and pull request and uploads it as the `gemini-nano-manager-offline-debug` artifact;
+you can also build it locally (see [Build](#build)). Installing it needs only the phone:
+
+1. **Get the APK onto the device.** Download the workflow artifact in the phone's browser, or
+   copy `app-offline-debug.apk` to the phone over USB/MTP, a local file share or a cloud drive
+   you already use. No ADB is involved.
+2. **Allow the installer.** The first time, Android asks the file manager or browser for
+   permission to install unknown apps. Allow it for that app
+   (`Settings → Apps → Special app access → Install unknown apps`); the grant belongs to the
+   file manager or browser, not to Gemini Nano Manager.
+3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager**,
+   version `0.4.0-offline` (versionCode 4). If your installer does not display the package name,
+   confirm it after the first launch in **Settings → Version and provenance** (Application ID
+   `dev.shockstruck.gemininano`) and in **System Components** (version, installer and signing
+   certificate SHA-256). If the package name or version differs, you are installing the wrong
+   file — stop and re-download it.
+4. **If installation fails with a signature mismatch**, uninstall the older debug build first.
+   Debug APKs signed with different debug keys cannot upgrade each other, so the installer
+   rejects the new one. Uninstalling also clears the app's local settings and stored probe
+   result; files you already exported are not affected. Then tap the new APK again.
+
+ADB is an optional convenience only; nothing else in this document requires it:
+
+```bash
+adb install -r app-offline-debug.apk
+```
+
+Emulators cannot exercise the on-device AI path.
+
+## On-device validation procedure
+
+This is the evidence path for the installed build. Every step is read-only observation; the app
+never provisions anything. Use a supported physical device with Android AICore installed and
+updated.
+
+1. **Overview.** Open the app. The **Runtime state** card shows the Android AICore and Private
+   Compute Services versionName/versionCode (or `unknown`), the PCS
+   `PROVIDE_PRIVATE_COMPUTE_SERVICES` cell, the retained **Summarization feature status**, base
+   model name when returned, the last probe time, the device and the build fingerprint. Tap
+   **Re-check** if it has not probed yet. Record the AICore and PCS versions exactly as shown.
+2. **Provisioning Diagnostics → Run Full Diagnostics.** Tap **Run Full Diagnostics** and wait for
+   `Report ready`. Then **Export JSON** and **Export text** (a Storage Access Framework file
+   picker, or the export directory configured in Settings). The JSON report contains:
+   the report schema and generation time; the app identity (applicationId, versionName,
+   versionCode); device facts (manufacturer, model, device, fingerprint, Android release, SDK
+   integer, security patch); the full permission matrix with *requested* and *granted* for every
+   principal × permission cell; every GenAI feature row (status, feature id, error code, exception
+   class, message, base model name or signature, vector dimension and token limit when returned,
+   latency, last download); the four Prompt configs with the same fields; the retained
+   summarization probe; the PCS surface (components, declared permission, enabled state, probed
+   intent actions); any PCS bind results already run; the offline inference matrix if it has run;
+   and the diagnostic event log. The text export carries the same content in readable form. The
+   action performs no download and no bind.
+3. **AICore Features → Re-probe all.** Tap **Re-probe all features** in the GenAI feature matrix
+   and **Re-probe all four** in the Prompt card. For every row record: status, feature id, error
+   code, exception class, message, base model name or model signature when the API returns one,
+   and probe latency. Rows are independent — one failure never changes another row. A `606`
+   row means AICore has no configuration entry for that feature id; report it as unprovisioned.
+4. **Model Manager.** Only a row ML Kit itself reports as **DOWNLOADABLE** offers a download
+   button. Tap **Download** on that row and record the progress bytes and the result; after a
+   failure the same row offers **Retry download** — record that result too. Nothing downloads
+   automatically, and no row offers a size the SDK did not report.
+5. **Offline Inference.** Before running anything, disable Wi-Fi and mobile data yourself in the
+   system settings (airplane mode is a convenient way to do both) and confirm both are off. Then
+   tap **Run offline matrix (N eligible)** and record each row's outcome, output/detail, error
+   code, exception class, message and latency. Export the results afterwards through
+   **Provisioning Diagnostics → Run Full Diagnostics → Export JSON**: the report's `offline` array
+   carries them. The app never toggles Wi-Fi or mobile data and cannot control AICore's or PCS's
+   network use, so a success row is evidence of offline operation **only** when you disabled
+   connectivity yourself and checked it was off. A success with connectivity on is not offline
+   evidence.
+6. **Private Compute Services → Run bind probe (6 services).** This is a separate explicit
+   action; Run Full Diagnostics does not trigger it. Tap **Run bind probe (6 services)** and
+   record, per fixed service: the bind outcome (binder returned, `SecurityException`, null
+   binding or timeout), the binder interface descriptor when returned, the exception
+   class/message, the elapsed time, the unbind-call count, and any `onServiceDisconnected` or
+   `onBindingDied`. The probe does one `bindService(BIND_AUTO_CREATE)` per component with a
+   3-second wait and exactly one unbind; it sends no binder transaction and calls no service
+   method. A returned binder therefore proves only that the OS association allowed the bind, not
+   that a gRPC request would be authorized.
+7. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
+   convenient); the Diagnostic Logs JSON export if you want the event stream; the AICore and PCS
+   versions from Overview; the permission matrix (already in the JSON export); the per-feature
+   and per-Prompt rows; the six bind outcomes; and the offline matrix with a note confirming you
+   disabled connectivity yourself.
+8. **Known platform limit.** On GrapheneOS the summarization probe reports
+   `Feature 622 is not available` (`3-PREPARATION_ERROR` / `606-FEATURE_NOT_FOUND`): AICore has
+   no provisioning entry for feature 622. Feature 622 is the AICore AIDL constant
+   `SAPI_SUMMARIZATION_EN_2` (decompiled source, not a model); the model is unknown. No rootless
+   app can insert that manifest into AICore — this app reports the state and does not fix it, and
+   a Prompt `606` with a different feature id does not change that.
+
 ## Sections
 
 | Section | State |
@@ -107,16 +203,6 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   succeeded.
 - The matrix, Prompt results, surface summary and bind results are emitted into the local
   `DiagnosticBus`, so the JSON export from Diagnostic Logs contains them.
-
-## Install
-
-Install the debug APK on a physical device, for example:
-
-```bash
-adb install -r app/build/outputs/apk/offline/debug/app-offline-debug.apk
-```
-
-Emulators cannot exercise the on-device AI path.
 
 ## No INTERNET in the default build
 
