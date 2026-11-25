@@ -1,223 +1,102 @@
-# Private Notes — On-device summarizer (Gemini Nano)
+# Gemini Nano Manager
 
-A minimal, heavily-commented Android demo that summarizes a note **entirely on the phone**
-using the **ML Kit GenAI Summarization API**, which runs on **Gemini Nano** via **Android
-AICore**.
+A rootless diagnostic and management app for Android AICore and the public ML Kit GenAI
+surfaces on GrapheneOS. This is a foundation build: it reports what an ordinary sandboxed
+app can actually observe, keeps the original on-device summarization as a probe, and does
+not pretend to provision anything it cannot.
 
-This is the deliberate opposite of a cloud AI demo:
+Derived from the public [anandgaur22/GeminiNano](https://github.com/anandgaur22/GeminiNano)
+demo. Internal experimental derivative; not affiliated with Google.
 
-| | This app |
-|---|---|
-| API key | **None** |
-| Network calls for AI | **None** |
-| Cost per summary | **Free** |
-| Works offline | **Yes** |
-| Where your note goes | **Nowhere — it stays on the device** |
+## Sections
 
-The whole point for the classroom: **turn off wifi and mobile data, and it still works.**
+| Section | State |
+| --- | --- |
+| Overview | Implemented: AICore/PCS presence and version, real summarization probe, most recent failure, decision-tree recommendation, retained summarization test |
+| System Components | Implemented: version, installer, signing SHA-256, SDK levels, requested permissions, observable grants, declared/exported components, metadata, probed intent actions |
+| AICore Features | Stage 3 placeholder (planned scope shown, no guessed data) |
+| Private Compute Services | Stage 4 placeholder |
+| Model Manager | Stage 3/4 placeholder |
+| Provisioning Diagnostics | Stage 3/4 placeholder |
+| Offline Inference | Stage 3 placeholder |
+| Privacy | Implemented |
+| Diagnostic Logs | Implemented: bounded local event bus, search/filter, copy, JSON and text export through SAF, redaction |
+| Settings | Implemented: theme, SAF export directory, log verbosity, reset probes, provenance |
 
----
+## Build
 
-## What is Gemini Nano / AICore?
+Requirements:
 
-- **Gemini Nano** is a small version of Google's Gemini model that runs directly on the
-  phone's hardware — no server involved.
-- **Android AICore** is the system service that hosts Nano and its adapters. Apps don't
-  ship the model; they ask AICore to run it locally.
-- **ML Kit GenAI** (`com.google.mlkit:genai-summarization`) is the friendly library we call.
-  It talks to AICore on-device. There is no cloud SDK and no key anywhere in this project.
+- Temurin JDK 21
+- Android SDK platform `android-37.1` and build-tools `37.0.0`
+- Gradle 9.3.1 through the wrapper
 
-Because inference happens on-device, the user's private note never leaves the phone, it
-costs nothing per request, and it works with the radios off.
+```bash
+# Point the build at an SDK that has android-37.1 and build-tools 37.0.0
+echo "sdk.dir=/path/to/android-sdk" > local.properties
 
----
-
-## Before you start — what you need (checklist)
-
-Tick all of these before running:
-
-- [ ] **Android Studio** (latest stable — Ladybug or newer).
-- [ ] **JDK 11+** (Android Studio ships its own — no separate install needed).
-- [ ] A **Gemini Nano–supported physical device**, e.g. **Pixel 8 / 8 Pro / 8a or newer**,
-      Pixel 9 series, or another supported flagship (Samsung S24+, etc.).
-      ⚠️ A normal **emulator will NOT work** — Nano needs real device hardware + AICore.
-- [ ] The device on **Android 8.0 (API 26) or higher**.
-- [ ] **Android AICore** app installed and updated on the device (details in Step 4 below).
-- [ ] A **USB cable** to connect the phone, plus **wifi/internet for the first run only**
-      (the model downloads once, then it's fully offline).
-
-> No Google account, no API key, no billing, no Firebase — none of that is needed.
-
----
-
-## Setup — step by step (do these in order)
-
-### Step 1 — Open the project in Android Studio
-
-1. Launch **Android Studio**.
-2. **File → Open** → select this project's root folder (`GeminiNano`) → **OK**.
-3. Wait for Gradle to finish syncing (bottom status bar shows progress). First sync
-   downloads dependencies, so keep the internet on. If it asks to upgrade the Gradle
-   plugin or install an SDK, click **Accept / Install**.
-
-### Step 2 — Point the project at your Android SDK
-
-The file `local.properties` tells Gradle where your SDK is. Android Studio usually creates
-it automatically. If Gradle complains "SDK location not found", open `local.properties` in
-the project root and set:
-
-```properties
-sdk.dir=/Users/<you>/Library/Android/sdk      # macOS
-# sdk.dir=C:\\Users\\<you>\\AppData\\Local\\Android\\Sdk   # Windows
+./gradlew --no-daemon assembleOfflineDebug testDebugUnitTest lintDebug
 ```
 
-(Don't commit this file — it's machine-specific.)
+The APK is written to
+`app/build/outputs/apk/offline/debug/app-offline-debug.apk`.
 
-### Step 3 — Turn on Developer Mode + USB debugging on the phone
+Modules: `:app`, `:core:model` (pure Kotlin), `:core:android`, `:core:genai` (the only
+module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testing`.
 
-1. On the phone: **Settings → About phone**.
-2. Tap **Build number** 7 times until it says "You are now a developer".
-3. Go back to **Settings → System → Developer options**.
-4. Turn on **USB debugging**.
-5. Connect the phone to the computer with USB. On the phone, tap **Allow** when it asks to
-   trust this computer.
+## Install
 
-### Step 4 — Make sure Android AICore is installed and ready (important!)
+Install the debug APK on a physical device, for example:
 
-Gemini Nano lives inside the **Android AICore** system app. Without it, the demo shows
-"On-device AI unavailable".
-
-1. On the phone, open the **Play Store** and search **"Android AICore"**.
-2. If there's an **Update** button, tap it. Otherwise it's already installed.
-3. Keep the phone on **wifi and charging** for a few minutes so AICore can pull its latest
-   config in the background. (On a freshly reset phone this can take a while — a reboot
-   speeds it up.)
-
-> The app already handles the case where AICore isn't ready — it checks availability first
-> and never crashes. This step just makes the demo actually produce a summary.
-
-### Step 5 — Build and run
-
-1. In Android Studio's toolbar, pick your **physical device** from the device dropdown
-   (not an emulator).
-2. Press the green **Run ▶** button (or `Ctrl/Cmd + R`).
-3. The app **Private Notes** installs and launches.
-
-### Step 6 — First summary (one-time model download)
-
-1. Paste or type a note. **Longer notes work best** — aim for a few paragraphs (real prose,
-   ~150+ words), e.g. long meeting notes or a journal entry.
-2. Tap **Summarize**.
-3. The first time, you'll see **"Preparing on-device model…"** with a **live progress bar
-   and a `42%  (128 MB / 305 MB)` counter** while Nano downloads (a few hundred MB, one
-   time, over wifi). When it reaches 100% the download disappears and a 3-bullet summary
-   appears automatically.
-4. Every run after that is instant and offline (no download, no progress bar).
-
-> How the progress is shown: ML Kit's `DownloadCallback` reports `onDownloadStarted(total)`
-> and repeated `onDownloadProgress(downloaded)` events. `NotesRepository` forwards those to
-> the `ViewModel`, which stores `downloadedBytes / totalBytes` in state, and the UI renders
-> a `LinearProgressIndicator` that fills up. If the size is briefly unknown it shows an
-> animated indeterminate bar labelled "Starting download…".
-
----
-
-## Step 7 — Prove it's really on-device (the classroom demo)
-
-1. Do one summary while online so the model finishes downloading.
-2. Turn on **Airplane mode** (or switch off **wifi AND mobile data**).
-3. Paste a fresh note → tap **Summarize** → it still produces a summary. 🎉
-4. Open `AndroidManifest.xml` and show the class there is **no `INTERNET` permission** — the
-   app literally cannot phone home.
-5. Tap **About** in the app to show the on-device vs cloud comparison.
-
----
-
-## Troubleshooting (common issues)
-
-| Symptom | Fix |
-|---|---|
-| App shows "On-device AI needs a supported device (e.g. Pixel 8+)." | You're on an emulator or an unsupported phone. Use a real Pixel 8+ / supported device. |
-| "Feature not available" / error code 606 | AICore hasn't finished its background setup. Keep the phone online, wait a few minutes, **reboot**, and retry. |
-| "AICore service failed to bind" (error 601) | Update the **Android AICore** app in Play Store, then reinstall this app. |
-| Gradle sync fails: "SDK location not found" | Set `sdk.dir` in `local.properties` (see Step 2). |
-| Summary is only 1–2 bullets or weak | The note was too short. `ARTICLE` mode needs real prose of a few hundred words. |
-| Manifest merger error about minSdk | Already handled via `tools:overrideLibrary` in `AndroidManifest.xml`; do a **Build → Clean Project** then rebuild. |
-| Nothing happens on unlocked-bootloader device | The API doesn't support devices with an unlocked bootloader. Use a stock device. |
-
----
-
-## Device requirements (summary)
-
-On-device AI needs a **Gemini Nano–supported device** — for example a **Pixel 8 / 8 Pro or
-newer** — running **Android 8.0 (API 26) or higher** with **Android AICore** installed and
-up to date. The app itself installs on **minSdk 24**, but the AI path is guarded at runtime
-and shows a clear message on unsupported devices. It **never** falls back to the cloud —
-that's the teaching point.
-
----
-
-## On-device (Nano) vs Cloud (Gemini API)
-
-| | On-device (Gemini Nano) | Cloud (Gemini API) |
-|---|---|---|
-| **Privacy** | Note stays on the phone | Note is sent to Google's servers |
-| **Offline** | Works with no connection | Requires internet |
-| **Cost** | Free | Billed per request |
-| **Setup** | No API key | API key + billing required |
-| **Capability** | Small, fast, focused tasks | Largest, most capable models |
-| **Best for** | Private, cheap, offline features | Heavy reasoning, long context, latest models |
-
-The same contrast is available in-app via the **About** button.
-
----
-
-## How the code is organized (MVVM)
-
-```
-app/src/main/java/com/anandgaur/gemininano/
-├── MainActivity.kt            # Hosts the Compose UI. No AI code.
-├── SummarizerViewModel.kt     # Holds UI state (StateFlow) + orchestrates the flow.
-├── data/
-│   └── NotesRepository.kt      # The ONLY place that touches ML Kit / Gemini Nano.
-└── ui/
-    ├── PrivateNotesScreen.kt   # Single screen: badges, editor, summary card, About.
-    └── theme/                  # Material 3 theme.
+```bash
+adb install -r app/build/outputs/apk/offline/debug/app-offline-debug.apk
 ```
 
-Flow when you tap **Summarize**:
+Emulators cannot exercise the on-device AI path.
 
-1. `NotesRepository.checkStatus()` asks ML Kit whether Nano is `AVAILABLE`,
-   `DOWNLOADABLE`, `DOWNLOADING`, or unsupported. (No network for the AI.)
-2. If downloadable, `downloadModel()` fetches the model once → UI shows
-   *"Preparing on-device model…"*.
-3. `summarize()` runs inference on the device and returns a 3-bullet summary.
-4. The ViewModel exposes it as immutable `NotesUiState`; the Compose screen just renders it.
+## No INTERNET in the default build
 
-The AI configuration lives in `NotesRepository`:
+The default `offline` flavor is the deliverable. The ML Kit GenAI dependency merges
+`android.permission.INTERNET` (and `ACCESS_NETWORK_STATE`) into the manifest, so
+`app/src/offline/AndroidManifest.xml` removes both with `tools:node="remove"`. Verify:
 
-```kotlin
-SummarizerOptions.builder(context)
-    .setInputType(SummarizerOptions.InputType.ARTICLE)
-    .setOutputType(SummarizerOptions.OutputType.THREE_BULLETS)
-    .setLanguage(SummarizerOptions.Language.ENGLISH)
-    .setLongInputAutoTruncationEnabled(true)
-    .build()
+```bash
+aapt2 dump permissions app/build/outputs/apk/offline/debug/app-offline-debug.apk
 ```
 
----
+The output must not contain `android.permission.INTERNET`. An optional `network` flavor
+exists only for a future, user-driven repository browser; it is not built by CI and is
+not the deliverable. The app's permission says nothing about AICore, Private Compute
+Services, Google Play Services or the Play Store, which are separate processes with
+their own network permissions.
 
-## Tech stack
+## On-device limitations
 
-- Kotlin + Jetpack Compose (Material 3)
-- MVVM: `AndroidViewModel` + `StateFlow` UI state + `NotesRepository`
-- Coroutines (with `kotlinx-coroutines-guava` to `await()` ML Kit's `ListenableFuture`s)
-- `com.google.mlkit:genai-summarization:1.0.0-beta1` — on-device only
-- minSdk 24 (AI path requires API 26+ and a Nano-supported device)
+- Gemini Nano requires a supported physical device with Android AICore installed and
+  updated. Only the public ML Kit APIs are used; there is no root, Xposed, Shizuku, ADB,
+  bootloader or verified-boot change and no hidden or system API.
+- On GrapheneOS the summarization probe currently returns
+  `3-PREPARATION_ERROR / 606-FEATURE_NOT_FOUND: Feature 622 is not available.` The app
+  reports this as unprovisioned and explains the platform restriction. It never reports
+  606 as success and never fabricates a model name, size or provisioning percentage.
+- Android's package visibility limits what can be read about other packages; results are
+  labelled "not visible" rather than guessed. Intent actions come from a fixed set of
+  probed actions because other apps' intent-filter XML is not exposed.
+- Diagnostic logs are in-process only and are written to disk only when you export them
+  through the Storage Access Framework. Note text, e-mail addresses and account-like
+  digit strings are redacted.
 
-## Notes & limitations
+## Provenance and licence
 
-- The Summarization API is **Beta**; the model supports **English, Japanese, and Korean**.
-- Input is capped at ~4000 tokens (~3000 English words); longer input is auto-truncated.
-- `ARTICLE` mode works best on real prose of a few hundred words — very short notes may
-  return only one or two bullets.
+The upstream demo has no licence file. This repository is an internal experimental
+derivative and makes no licence claim over the upstream code. No proprietary Google
+APKs, model binaries, keys or other restricted artifacts are included. The app talks to
+Google components that are already installed on the device; it does not bundle or
+redistribute them.
+
+## CI
+
+`.github/workflows/build.yml` runs on push, pull request and manual dispatch with
+`permissions: contents: read`, Temurin JDK 21, SHA-pinned actions, no secrets, and runs
+`assembleOfflineDebug testDebugUnitTest lintDebug`. It uploads the offline debug APK and
+prints its SHA-256 in the job summary.
