@@ -13,8 +13,11 @@ import dev.shockstruck.gemininano.model.PackageReadError
 import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
 import dev.shockstruck.gemininano.model.PcsActivityTarget
+import dev.shockstruck.gemininano.model.PcsBindHistoryNotes
 import dev.shockstruck.gemininano.model.PcsBindOutcome
+import dev.shockstruck.gemininano.model.PcsBindProvenance
 import dev.shockstruck.gemininano.model.PcsBindResult
+import dev.shockstruck.gemininano.model.PcsBindRow
 import dev.shockstruck.gemininano.model.PcsLaunchOutcome
 import dev.shockstruck.gemininano.model.PcsSettingsResolution
 import dev.shockstruck.gemininano.model.PcsSurface
@@ -66,6 +69,8 @@ class FullDiagnosticsReportTest {
             feature(GenAiFeature.EMBEDDING, status = FeatureStatusKind.UNAVAILABLE),
         ),
         bindResults: List<PcsBindResult> = emptyList(),
+        bindRows: List<PcsBindRow> = emptyList(),
+        bindHistoryNote: String? = null,
         offline: List<OfflineInferenceResult> = listOf(
             OfflineInferenceResult(
                 feature = GenAiFeature.REWRITING,
@@ -105,6 +110,8 @@ class FullDiagnosticsReportTest {
         summarization = summarization,
         surface = surface,
         bindResults = bindResults,
+        bindRows = bindRows,
+        bindHistoryNote = bindHistoryNote,
         offline = offline,
         events = events,
         packages = packages,
@@ -534,6 +541,89 @@ class FullDiagnosticsReportTest {
         assertEquals(1, json.getJSONArray("pcsBind").length())
         assertEquals("SecurityException", json.getJSONArray("pcsBind").getJSONObject(0).getString("outcome"))
         assertTrue(report.text.contains("java.lang.SecurityException"))
+    }
+
+    @Test
+    fun bindRowsCarryProvenanceTheThreeFactsAndTheHistoryNote() {
+        val grpcName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService"
+        val genaiName = "com.google.android.apps.miphone.astrea.ai.service.GenAiInferenceService"
+        val rows = listOf(
+            PcsBindRow(
+                componentName = grpcName,
+                role = "grpc",
+                result = PcsBindResult(
+                    componentName = grpcName,
+                    outcome = PcsBindOutcome.BINDER_RETURNED,
+                    role = "grpc",
+                    interfaceDescriptor = "com.example.IPcs",
+                    binderAlive = true,
+                ),
+                provenance = PcsBindProvenance.CURRENT_RUN,
+                observedAtEpochMillis = fixedNow,
+                appVersionName = "0.7.0",
+                appVersionCode = 8L,
+                currentPcsVersionCode = 153_000L,
+            ),
+            PcsBindRow(
+                componentName = genaiName,
+                role = "genai_inference",
+                result = PcsBindResult(
+                    componentName = genaiName,
+                    outcome = PcsBindOutcome.NULL_BINDING,
+                    role = "genai_inference",
+                ),
+                provenance = PcsBindProvenance.EARLIER_RUN,
+                observedAtEpochMillis = fixedNow - 60_000,
+                appVersionName = "0.6.1",
+                appVersionCode = 7L,
+                storedPcsVersionCode = 152_997L,
+                currentPcsVersionCode = 153_000L,
+            ),
+        )
+        val note = PcsBindHistoryNotes.corrupt("bad header")
+        val report = FullDiagnosticsReportBuilder().build(
+            input(
+                bindResults = rows.map { it.result },
+                bindRows = rows,
+                bindHistoryNote = note,
+            ),
+        )
+        val json = JSONObject(report.json)
+        assertEquals(note, json.getString("pcsBindHistoryNote"))
+        val bindRows = json.getJSONArray("pcsBind")
+        assertEquals(2, bindRows.length())
+
+        val current = bindRows.getJSONObject(0)
+        assertEquals("current run", current.getString("provenance"))
+        assertFalse(current.getBoolean("pcsVersionMismatch"))
+        assertTrue(current.getString("binding").startsWith("binder returned"))
+        assertEquals("not tested: no transaction is sent", current.getString("rpcAuthorization"))
+        assertEquals("not tested", current.getString("provisioning"))
+
+        val earlier = bindRows.getJSONObject(1)
+        assertEquals("earlier run", earlier.getString("provenance"))
+        assertTrue(earlier.getBoolean("pcsVersionMismatch"))
+        assertEquals(152_997L, earlier.getLong("pcsVersionCode"))
+        assertEquals(153_000L, earlier.getLong("currentPcsVersionCode"))
+        assertFalse(earlier.getBoolean("classifierInput"))
+        assertTrue(earlier.has("observedAtEpochMillis"))
+
+        assertTrue(report.text.contains("RPC authorization: not tested: no transaction is sent"))
+        assertTrue(report.text.contains("provisioning: not tested"))
+        assertTrue(report.text.contains("earlier run at"))
+        assertTrue(report.text.contains("not used as classifier input"))
+        assertTrue(report.text.contains("History: $note"))
+    }
+
+    @Test
+    fun missingHistoryIsAnExplicitNoteNotSilence() {
+        val report = FullDiagnosticsReportBuilder().build(
+            input(bindHistoryNote = PcsBindHistoryNotes.MISSING),
+        )
+        val json = JSONObject(report.json)
+        assertEquals(PcsBindHistoryNotes.MISSING, json.getString("pcsBindHistoryNote"))
+        assertTrue(report.text.contains("not run: no bind plan was collected"))
+        assertTrue(report.text.contains("History: ${PcsBindHistoryNotes.MISSING}"))
     }
 
     @Test

@@ -42,6 +42,7 @@ fun SettingsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
         factory = viewModelFactory { initializer { SettingsViewModel(graph) } },
     )
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val bindHistoryCount by viewModel.bindHistoryCount.collectAsStateWithLifecycle()
     var message by remember { mutableStateOf<String?>(null) }
 
     val directoryPicker = rememberLauncherForActivityResult(
@@ -153,6 +154,39 @@ fun SettingsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             item {
                 Text(
                     text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        item {
+            SectionCard(
+                title = "PCS bind history",
+                subtitle = "Kept only in this app's private storage; the last five results per component.",
+            ) {
+                KeyValueRow(
+                    label = "Stored results",
+                    value = bindHistoryCount.toString(),
+                    isUnknown = bindHistoryCount == 0,
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        viewModel.clearBindHistory()
+                        message = if (bindHistoryCount == 0) {
+                            "No stored bind history to clear."
+                        } else {
+                            "Stored bind history cleared. The next diagnostics run starts a new history."
+                        }
+                    },
+                ) {
+                    Text("Clear bind history")
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Clearing removes the stored observations only. Files you already exported " +
+                        "are unchanged, and a later NOT RUN row never overwrites an earlier observation " +
+                        "until you clear it here.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
