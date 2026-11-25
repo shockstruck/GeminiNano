@@ -17,6 +17,7 @@ import dev.shockstruck.gemininano.core.genai.UnavailableFeatureSuite
 import dev.shockstruck.gemininano.core.genai.UnavailablePromptProbe
 import dev.shockstruck.gemininano.core.genai.UnavailableSummarizationProbe
 import dev.shockstruck.gemininano.data.LogExportManager
+import dev.shockstruck.gemininano.data.PcsBindHistoryStore
 import dev.shockstruck.gemininano.data.ProbeCache
 import dev.shockstruck.gemininano.data.SettingsRepository
 import dev.shockstruck.gemininano.diagnostics.BoundedProbeRunner
@@ -44,6 +45,9 @@ class AppGraph(context: Context) {
     private val appContext = context.applicationContext
 
     val settings = SettingsRepository(appContext)
+
+    /** Bind outcomes kept in app-private storage, with the last five per component. */
+    val pcsBindHistoryStore = PcsBindHistoryStore(appContext)
 
     val diagnosticBus = DiagnosticBus(
         minimumSeverity = { settings.state.value.logVerbosity },

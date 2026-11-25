@@ -45,9 +45,10 @@ fun PrivateComputeServicesScreen(graph: AppGraph, modifier: Modifier = Modifier)
         }
         item {
             PcsBindCard(
-                results = state.bindResults,
+                rows = state.bindRows,
                 eligibleCount = state.eligibleBindCount,
                 busy = state.bindBusy,
+                historyNote = state.bindHistoryNote,
                 message = state.bindMessage,
                 onRun = viewModel::runBindProbe,
             )
