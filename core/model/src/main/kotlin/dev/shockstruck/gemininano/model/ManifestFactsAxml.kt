@@ -114,17 +114,14 @@ class ManifestFactsAxmlDecoder(
 
     private fun readPoolString(at: Int, limit: Int, utf8: Boolean): String {
         if (utf8) {
-            var cursor = at
-            var length = u8(cursor)
-            cursor += 1
-            if (length and 0x80 != 0) {
-                length = ((length and 0x7f) shl 8) or u8(cursor)
-                cursor += 1
-            }
-            if (length < 0 || cursor > limit - length) {
+            // A UTF-8 entry carries the UTF-16 length first, then the byte length;
+            // each prefix is one byte, or two when its high bit is set.
+            val afterUtf16Length = skipUtf8Length(at, limit)
+            val (byteLength, dataAt) = readUtf8Length(afterUtf16Length, limit)
+            if (byteLength < 0 || dataAt > limit - byteLength) {
                 throw ManifestFormatException("UTF-8 string exceeds the string pool")
             }
-            return String(bytes, cursor, length, Charsets.UTF_8)
+            return String(bytes, dataAt, byteLength, Charsets.UTF_8)
         }
         var cursor = at
         var length = u16(cursor)
@@ -137,6 +134,35 @@ class ManifestFactsAxmlDecoder(
             throw ManifestFormatException("UTF-16 string exceeds the string pool")
         }
         return String(bytes, cursor, length * 2, Charsets.UTF_16LE)
+    }
+
+    /** Skips one UTF-8 length prefix (one byte, or two when the high bit is set). */
+    private fun skipUtf8Length(at: Int, limit: Int): Int {
+        requireStringByte(at, limit)
+        return if (u8(at) and 0x80 != 0) {
+            requireStringByte(at + 1, limit)
+            at + 2
+        } else {
+            at + 1
+        }
+    }
+
+    /** Decodes one UTF-8 length prefix and returns it with the position after it. */
+    private fun readUtf8Length(at: Int, limit: Int): Pair<Int, Int> {
+        requireStringByte(at, limit)
+        val first = u8(at)
+        return if (first and 0x80 != 0) {
+            requireStringByte(at + 1, limit)
+            (((first and 0x7f) shl 8) or u8(at + 1)) to (at + 2)
+        } else {
+            first to (at + 1)
+        }
+    }
+
+    private fun requireStringByte(at: Int, limit: Int) {
+        if (at < 0 || at >= limit) {
+            throw ManifestFormatException("string length prefix exceeds the string pool")
+        }
     }
 
     private fun parseResourceMap(chunkStart: Int, headerSize: Int, size: Int) {
@@ -181,8 +207,7 @@ class ManifestFactsAxmlDecoder(
         val rawIndex = u32(at + 8)
         val dataType = u8(at + 15)
         val data = u32(at + 16)
-        val name = stringOrNull(nameIndex)
-            ?: throw ManifestFormatException("attribute name index $nameIndex is missing")
+        val name = stringOrNull(nameIndex) ?: ""
         val raw = stringOrNull(rawIndex)
         return ManifestAttribute(
             name = name,
