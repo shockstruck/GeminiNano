@@ -636,6 +636,11 @@ class InstalledCodeDex private constructor(
                 val dataSize = intAt(0x68)
                 val dataOffset = intAt(0x6c)
                 requireSection(dataOffset, dataSize, 1, headerSize, limit, "data")
+                if (dataSize % 4 != 0L) {
+                    throw InstalledCodeFormatException(
+                        "data size $dataSize is not an even multiple of four, as the header requires",
+                    )
+                }
             }
 
             return Header(
