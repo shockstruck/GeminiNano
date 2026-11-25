@@ -22,6 +22,10 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Gemini Nano"
+rootProject.name = "Gemini Nano Manager"
 include(":app")
- 
+include(":core:model")
+include(":core:android")
+include(":core:genai")
+include(":core:diagnostics")
+include(":core:testing")

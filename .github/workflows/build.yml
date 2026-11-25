@@ -1,0 +1,67 @@
+name: Build offline debug APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Assemble, test and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Install Android SDK packages
+        run: |
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER=sdkmanager
+          else
+            SDKMANAGER="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-37.1" "build-tools;37.0.0"
+
+      - name: Assemble, test and lint
+        run: ./gradlew --no-daemon assembleOfflineDebug testDebugUnitTest lintDebug
+
+      - name: APK checksum and size
+        run: |
+          APK=app/build/outputs/apk/offline/debug/app-offline-debug.apk
+          sha256sum "$APK" | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -l "$APK" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify APK identity and offline permissions
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          AAPT2="$SDK_ROOT/build-tools/37.0.0/aapt2"
+          APK=app/build/outputs/apk/offline/debug/app-offline-debug.apk
+          "$AAPT2" dump badging "$APK" | head -4 | tee -a "$GITHUB_STEP_SUMMARY"
+          if "$AAPT2" dump permissions "$APK" | grep -q "android.permission.INTERNET"; then
+            echo "FAIL: android.permission.INTERNET is present in the offline APK" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "OK: no android.permission.INTERNET in the offline APK" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gemini-nano-manager-offline-debug
+          path: app/build/outputs/apk/offline/debug/app-offline-debug.apk
+          if-no-files-found: error
+          retention-days: 14

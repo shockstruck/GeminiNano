@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Offline flavor: the deliverable build. The ML Kit GenAI AAR merges INTERNET and
+  ACCESS_NETWORK_STATE into the manifest; this app uses neither, so both are removed
+  from the merged manifest for this flavor. Verified in CI with aapt2 dump permissions.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.INTERNET"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
+
+</manifest>
