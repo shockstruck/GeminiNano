@@ -19,6 +19,8 @@ class PermissionMatrixTest {
         visible: Boolean = true,
         requested: Set<String> = emptySet(),
         grants: Map<String, GrantState> = emptyMap(),
+        requestedFlagsGrants: Map<String, Boolean?> = emptyMap(),
+        declarations: Map<String, PermissionDeclaration> = emptyMap(),
     ) = PackageFacts(
         packageName = packageName,
         visibility = if (visible) PackageVisibility.VISIBLE else PackageVisibility.NOT_VISIBLE,
@@ -28,8 +30,24 @@ class PermissionMatrixTest {
                 permission = permission,
                 state = grants[permission] ?: GrantState.DENIED,
                 requested = permission in requested,
+                requestedFlagsGrant = if (requestedFlagsGrants.containsKey(permission)) {
+                    requestedFlagsGrants[permission]
+                } else {
+                    permission in requested && grants[permission] == GrantState.GRANTED
+                },
+                declaration = declarations[permission],
             )
         },
+    )
+
+    private fun declaration(
+        base: Int = PermissionProtection.BASE_SIGNATURE,
+        flags: Int = PermissionProtection.FLAG_PRIVILEGED,
+    ) = PermissionDeclaration(
+        defined = true,
+        declaringPackage = "android",
+        protectionBase = base,
+        protectionFlags = flags,
     )
 
     private fun matrix(
@@ -115,17 +133,124 @@ class PermissionMatrixTest {
     }
 
     @Test
-    fun grantCanNeverOverrideNotRequested() {
+    fun anObservedGrantIsShownEvenWhenNotRequested() {
         val result = matrix(
             app = facts(
                 PlatformPrincipals.APP,
                 requested = emptySet(),
                 grants = mapOf(PlatformPermissions.INTERNET to GrantState.GRANTED),
+                requestedFlagsGrants = mapOf(PlatformPermissions.INTERNET to true),
             ),
         )
         val appInternet = result.cell(PlatformPrincipals.APP, PlatformPermissions.INTERNET)!!
-        assertEquals(PermissionStatus.NOT_REQUESTED, appInternet.status)
         assertFalse(appInternet.requested)
+        assertEquals(PermissionStatus.GRANTED_NOT_REQUESTED, appInternet.status)
+        assertEquals(
+            "grant observed · not requested",
+            PermissionMatrixFormatting.renderCell(appInternet),
+        )
+    }
+
+    @Test
+    fun theTwoGrantSourcesDisagreementIsItsOwnStatus() {
+        val result = matrix(
+            pcs = facts(
+                PlatformPrincipals.PCS,
+                requested = setOf(PlatformPermissions.PCC),
+                grants = mapOf(PlatformPermissions.PCC to GrantState.GRANTED),
+                requestedFlagsGrants = mapOf(PlatformPermissions.PCC to false),
+            ),
+        )
+        val pcc = result.cell(PlatformPrincipals.PCS, PlatformPermissions.PCC)!!
+        assertEquals(PermissionStatus.GRANT_DISAGREEMENT, pcc.status)
+        assertTrue(pcc.grantSourcesDisagree)
+        val rendered = PermissionMatrixFormatting.renderCell(pcc)
+        assertTrue(rendered.contains("grant sources disagree"))
+        assertTrue(rendered.contains("checkPermission=granted"))
+        assertTrue(rendered.contains("requestedPermissionsFlags=not granted"))
+    }
+
+    @Test
+    fun aPermissionFactShowsADisagreementExplicitly() {
+        val fact = PermissionGrantFacts(
+            permission = PlatformPermissions.PCC,
+            state = GrantState.GRANTED,
+            requested = true,
+            requestedFlagsGrant = false,
+            declaration = declaration(),
+        )
+        assertTrue(fact.grantSourcesDisagree)
+        val rendered = PermissionMatrixFormatting.renderPermissionFact(fact)
+        assertTrue(rendered.contains("checkPermission=granted"))
+        assertTrue(rendered.contains("requestedPermissionsFlags=not granted"))
+        assertTrue(rendered.contains("GRANT SOURCES DISAGREE"))
+        assertTrue(rendered.contains("declared by android · protection=signature|privileged"))
+    }
+
+    @Test
+    fun aReadErrorIsNeverReportedAsNotVisible() {
+        val result = matrix(
+            pcs = PackageFacts(
+                packageName = PlatformPrincipals.PCS,
+                visibility = PackageVisibility.READ_ERROR,
+                readError = PackageReadError(
+                    exceptionClass = "java.lang.IllegalStateException",
+                    message = "boom",
+                    attempts = 3,
+                ),
+            ),
+        )
+        val pcc = result.cell(PlatformPrincipals.PCS, PlatformPermissions.PCC)!!
+        assertEquals(PermissionStatus.READ_ERROR, pcc.status)
+        assertEquals(
+            "unknown (package read error)",
+            PermissionMatrixFormatting.renderCell(pcc),
+        )
+    }
+
+    @Test
+    fun requestedButDeniedSignatureOrPrivilegedIsListedWithItsDeclaration() {
+        val result = matrix(
+            pcs = facts(
+                PlatformPrincipals.PCS,
+                requested = setOf(PlatformPermissions.PCC),
+                grants = mapOf(PlatformPermissions.PCC to GrantState.DENIED),
+                requestedFlagsGrants = mapOf(PlatformPermissions.PCC to false),
+                declarations = mapOf(PlatformPermissions.PCC to declaration()),
+            ),
+        )
+        val pcc = result.cell(PlatformPrincipals.PCS, PlatformPermissions.PCC)!!
+        assertEquals(PermissionStatus.DENIED, pcc.status)
+        assertTrue(pcc.isSignatureOrPrivileged)
+        assertEquals(listOf(pcc), result.requestedButDeniedSignatureOrPrivileged())
+        assertEquals(
+            "declared by android · protection=signature|privileged",
+            PermissionMatrixFormatting.declarationLabel(pcc.declaration),
+        )
+    }
+
+    @Test
+    fun anUndefinedPermissionSaysNotDefinedOnThisOs() {
+        val result = matrix(
+            aicore = facts(
+                PlatformPrincipals.AICORE,
+                requested = setOf(PlatformPermissions.READ_DEVICE_CONFIG),
+                grants = mapOf(PlatformPermissions.READ_DEVICE_CONFIG to GrantState.DENIED),
+                requestedFlagsGrants = mapOf(PlatformPermissions.READ_DEVICE_CONFIG to false),
+                declarations = mapOf(
+                    PlatformPermissions.READ_DEVICE_CONFIG to PermissionDeclaration(defined = false),
+                ),
+            ),
+        )
+        val observation = result.cell(PlatformPrincipals.AICORE, PlatformPermissions.READ_DEVICE_CONFIG)!!
+        assertEquals(
+            "not defined on this OS",
+            PermissionMatrixFormatting.declarationLabel(observation.declaration),
+        )
+        assertTrue(
+            PermissionMatrixFormatting.verificationLabel(observation)
+                .contains("requestedPermissionsFlags=not granted"),
+        )
     }
 
     @Test

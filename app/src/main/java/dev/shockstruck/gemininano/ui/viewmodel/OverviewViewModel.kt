@@ -68,7 +68,9 @@ class OverviewViewModel(
             packages = withContext(Dispatchers.IO) {
                 graph.packageFactsProvider.inspectPackages()
             }
-            val result = graph.summarizationProbe.probe()
+            val result = graph.probeRunner.probeSummarization {
+                graph.summarizationProbe.probe()
+            }
             graph.probeCache.store(result)
             probe = result
             val duration = System.currentTimeMillis() - startedAt

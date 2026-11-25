@@ -86,6 +86,7 @@ class MlKitFeatureSuite(
     private val appContext = context.applicationContext
 
     override suspend fun probe(feature: GenAiFeature): FeatureProbeResult {
+        val started = SystemClock.elapsedRealtime()
         if (!feature.implementedInPublicApi) {
             return FeatureProbeResult.omitted(feature, probedAtEpochMillis = System.currentTimeMillis())
         }
@@ -104,7 +105,7 @@ class MlKitFeatureSuite(
                 GenAiFeature.TEXT_TO_SPEECH -> probeTextToSpeech()
             }
         } catch (t: Throwable) {
-            failureResult(feature, t, SystemClock.elapsedRealtime())
+            failureResult(feature, t, started)
         }
     }
 

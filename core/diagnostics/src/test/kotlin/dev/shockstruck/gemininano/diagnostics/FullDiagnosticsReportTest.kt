@@ -74,6 +74,7 @@ class FullDiagnosticsReportTest {
             ),
             settings = PcsSettingsResolution(true, "PcsSettingsActivity", "resolved through ACTION_APPLICATION_PREFERENCES"),
         ),
+        packages: List<dev.shockstruck.gemininano.model.PackageFacts> = emptyList(),
     ) = FullDiagnosticsInput(
         generatedAtEpochMillis = fixedNow,
         metadata = ExportMetadata(
@@ -91,6 +92,7 @@ class FullDiagnosticsReportTest {
         bindResults = bindResults,
         offline = offline,
         events = events,
+        packages = packages,
     )
 
     @Test
@@ -101,7 +103,7 @@ class FullDiagnosticsReportTest {
         assertEquals("dev.shockstruck.gemininano", json.getJSONObject("app").getString("applicationId"))
         assertEquals(4, json.getJSONObject("app").getInt("versionCode"))
         assertEquals(5, json.getJSONObject("permissionMatrix").getJSONArray("principals").length())
-        assertEquals(4, json.getJSONArray("features").length())
+        assertEquals(GenAiFeature.MATRIX.size, json.getJSONArray("features").length())
         assertEquals(1, json.getJSONArray("prompt").length())
         assertTrue(json.getJSONObject("summarization").has("status"))
         assertTrue(json.getJSONObject("pcs").getBoolean("packageVisible"))
@@ -148,6 +150,78 @@ class FullDiagnosticsReportTest {
         assertTrue(text.contains("Proofreading: PROBE ERROR"))
         assertTrue(text.contains("error=606"))
         assertTrue(text.contains("Feature 645 is not available."))
+    }
+
+    @Test
+    fun featuresWithoutAResultAreExportedAsNotProbedNotOmitted() {
+        val report = FullDiagnosticsReportBuilder().build(
+            input(features = listOf(feature(GenAiFeature.REWRITING))),
+        )
+        val json = JSONObject(report.json)
+        assertEquals(GenAiFeature.MATRIX.size, json.getJSONArray("features").length())
+        val rows = (0 until json.getJSONArray("features").length())
+            .map { json.getJSONArray("features").getJSONObject(it) }
+        val unprobed = rows.filter { it.getString("status") == "NOT PROBED" }
+        assertEquals(GenAiFeature.MATRIX.size - 1, unprobed.size)
+        unprobed.forEach { row ->
+            assertEquals("not probed yet", row.getString("detail"))
+            assertTrue(row.isNull("errorCode"))
+            assertTrue(row.isNull("exceptionClass"))
+        }
+        assertTrue(report.text.contains("Proofreading: NOT PROBED"))
+        assertTrue(report.text.contains("not probed yet"))
+    }
+
+    @Test
+    fun permissionVerificationExportsEveryRequestedPermissionAndItsDeclaration() {
+        val pcs = TestFixtures.packageFacts(
+            packageName = "com.google.android.as.oss",
+            requestedPermissions = listOf(
+                "android.permission.PROVIDE_PRIVATE_COMPUTE_SERVICES",
+                "com.google.android.apps.aicore.service.BIND_SERVICE",
+            ),
+            permissionGrants = listOf(
+                dev.shockstruck.gemininano.model.PermissionGrantFacts(
+                    permission = "android.permission.PROVIDE_PRIVATE_COMPUTE_SERVICES",
+                    state = dev.shockstruck.gemininano.model.GrantState.DENIED,
+                    requested = true,
+                    requestedFlagsGrant = false,
+                    declaration = dev.shockstruck.gemininano.model.PermissionDeclaration(
+                        defined = true,
+                        declaringPackage = "android",
+                        protectionBase = dev.shockstruck.gemininano.model.PermissionProtection.BASE_SIGNATURE,
+                        protectionFlags = dev.shockstruck.gemininano.model.PermissionProtection.FLAG_PRIVILEGED,
+                    ),
+                ),
+                dev.shockstruck.gemininano.model.PermissionGrantFacts(
+                    permission = "com.google.android.apps.aicore.service.BIND_SERVICE",
+                    state = dev.shockstruck.gemininano.model.GrantState.GRANTED,
+                    requested = true,
+                    requestedFlagsGrant = true,
+                    declaration = dev.shockstruck.gemininano.model.PermissionDeclaration(defined = false),
+                ),
+            ),
+        )
+        val report = FullDiagnosticsReportBuilder().build(input(packages = listOf(pcs)))
+        val json = JSONObject(report.json)
+        val exported = json.getJSONArray("permissionVerification")
+        assertEquals(1, exported.length())
+        val packageJson = exported.getJSONObject(0)
+        assertEquals("com.google.android.as.oss", packageJson.getString("packageName"))
+        assertEquals(2, packageJson.getJSONArray("permissions").length())
+        val pcc = packageJson.getJSONArray("permissions").getJSONObject(0)
+        assertFalse(pcc.getBoolean("requestedPermissionsFlagsGrant"))
+        assertTrue(pcc.getJSONObject("declaration").getBoolean("defined"))
+        assertEquals(
+            "signature|privileged",
+            pcc.getJSONObject("declaration").getString("protection"),
+        )
+        val bind = packageJson.getJSONArray("permissions").getJSONObject(1)
+        assertFalse(bind.getJSONObject("declaration").getBoolean("defined"))
+        assertTrue(packageJson.getJSONArray("requestedButDeniedSignatureOrPrivileged").length() == 1)
+        assertTrue(report.text.contains("== Permission verification"))
+        assertTrue(report.text.contains("not defined on this OS"))
+        assertTrue(report.text.contains("declared by android"))
     }
 
     @Test
@@ -202,7 +276,9 @@ class FullDiagnosticsReportTest {
             ),
         )
         val json = JSONObject(report.json)
-        val agent = json.getJSONArray("features").getJSONObject(0)
+        val agent = (0 until json.getJSONArray("features").length())
+            .map { json.getJSONArray("features").getJSONObject(it) }
+            .first { it.getString("feature") == "agent" }
         assertEquals("UNKNOWN", agent.getString("status"))
         assertTrue(agent.isNull("baseModelName"))
         assertTrue(agent.isNull("featureId"))

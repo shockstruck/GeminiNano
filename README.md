@@ -59,10 +59,15 @@ updated.
    picker, or the export directory configured in Settings). The JSON report contains:
    the report schema and generation time; the app identity (applicationId, versionName,
    versionCode); device facts (manufacturer, model, device, fingerprint, Android release, SDK
-   integer, security patch); the full permission matrix with *requested* and *granted* for every
-   principal × permission cell; every GenAI feature row (status, feature id, error code, exception
-   class, message, base model name or signature, vector dimension and token limit when returned,
-   latency, last download); the four Prompt configs with the same fields; the retained
+   integer, security patch); the full permission matrix with *requested*, `checkPermission`,
+   the `requestedPermissionsFlags` grant bit and the `getPermissionInfo` declaration for every
+   principal × permission cell; a permission-verification block listing every permission PCS,
+   AICore and the other catalogued packages request, with the same three sources and any
+   requested-but-denied signature or privileged permission called out; every GenAI feature row
+   (status — including an explicit `NOT PROBED` row when no result exists — feature id, error
+   code, exception class, message, base model name or signature, vector dimension and token
+   limit when returned, latency, probe time, last download); the four Prompt configs with the
+   same fields; the retained
    summarization probe; the PCS surface (components, declared permission, enabled state, probed
    intent actions); any PCS bind results already run; the offline inference matrix if it has run;
    and the diagnostic event log. The text export carries the same content in readable form. The
@@ -70,12 +75,16 @@ updated.
 3. **AICore Features → Re-probe all.** Tap **Re-probe all features** in the GenAI feature matrix
    and **Re-probe all four** in the Prompt card. For every row record: status, feature id, error
    code, exception class, message, base model name or model signature when the API returns one,
-   and probe latency. Rows are independent — one failure never changes another row. A `606`
-   row means AICore has no configuration entry for that feature id; report it as unprovisioned.
+   probe time and probe latency. Rows are independent — one failure, or one probe that hangs to
+   its timeout, never changes another row. A `606` row means AICore has no configuration entry
+   for that feature id; report it as unprovisioned. A row with no result reads **NOT PROBED**;
+   that is not an error.
 4. **Model Manager.** Only a row ML Kit itself reports as **DOWNLOADABLE** offers a download
    button. Tap **Download** on that row and record the progress bytes and the result; after a
    failure the same row offers **Retry download** — record that result too. Nothing downloads
-   automatically, and no row offers a size the SDK did not report.
+   automatically, and no row offers a size the SDK did not report. A **PROBE ERROR** row shows
+   the error code, exception class, message and probe time; a row with no result shows
+   **NOT PROBED**, and its detail is never used for a probed result.
 5. **Offline Inference.** Before running anything, disable Wi-Fi and mobile data yourself in the
    system settings (airplane mode is a convenient way to do both) and confirm both are off. Then
    tap **Run offline matrix (N eligible)** and record each row's outcome, output/detail, error
@@ -156,9 +165,11 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   and this app against `PROVIDE_PRIVATE_COMPUTE_SERVICES`,
   `com.google.android.apps.aicore.service.BIND_SERVICE`, `WRITE_SECURE_SETTINGS`,
   `MANAGE_VIRTUAL_MACHINE`, `READ_DEVICE_CONFIG`, `READ_RESTRICTED_STATS` and `INTERNET`.
-  Every cell shows *requested* (`requestedPermissions`) and *granted* (`checkPermission`)
-  separately; "not requested" is never rendered as "denied", and one principal's state is
-  never inferred from another's.
+  Every cell shows *requested* (`requestedPermissions`), `checkPermission`, the
+  `requestedPermissionsFlags` grant bit and the `getPermissionInfo` declaration (declaring
+  package and protection level/flags, or "not defined on this OS"). A disagreement between the
+  two grant sources is its own status; "not requested" is never rendered as "denied" and never
+  hides an observed grant; one principal's state is never inferred from another's.
 - **Prompt.** The four public `ModelConfig` combinations are probed independently of
   summarization. `checkStatus()` runs on every probe; `getBaseModelName()` and one
   `generateContent("Reply OK")` run only when ML Kit reports AVAILABLE; a download starts
@@ -195,7 +206,9 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   permission matrix, probes every GenAI feature status, the four Prompt configs and the
   retained summarization probe, records the PCS surface, includes any bind results the
   user already ran, and builds JSON and text reports through the existing SAF export
-  path. It performs no download and no bind.
+  path. Each probe is isolated and bounded by a 30-second timeout, so one probe that
+  throws or hangs cannot prevent the rest of the report. It performs no download and no
+  bind.
 - **Decision line.** Built from the evidence above: PCS PCC state, Prompt 606/AVAILABLE
   results and the gRPC bind outcome. The label is always
   `622 — AICore AIDL constant SAPI_SUMMARIZATION_EN_2 (decompiled source, not a model); model unknown.`

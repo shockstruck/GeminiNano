@@ -29,6 +29,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.diagnostics.DiagnosticFormatting
 import dev.shockstruck.gemininano.model.FeatureStatusKind
+import dev.shockstruck.gemininano.model.GenAiFeature
 import dev.shockstruck.gemininano.model.Outcome
 import dev.shockstruck.gemininano.model.Severity
 import dev.shockstruck.gemininano.ui.components.KeyValueRow
@@ -188,20 +189,16 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                 title = "Feature status summary",
                 subtitle = "One row per public GenAI capability from the last probe.",
             ) {
-                val results = state.features
-                if (results.isEmpty()) {
-                    Text(
-                        if (state.featureBusy) "Probing…" else "Run Full Diagnostics to collect the feature statuses.",
-                        style = MaterialTheme.typography.bodyMedium,
+                if (state.featureBusy) {
+                    Text("Probing…", style = MaterialTheme.typography.bodyMedium)
+                }
+                GenAiFeature.MATRIX.forEach { feature ->
+                    val result = state.features.firstOrNull { it.feature == feature }
+                    KeyValueRow(
+                        label = feature.displayName,
+                        value = result?.status?.label ?: FeatureStatusKind.NOT_PROBED.label,
+                        isUnknown = result == null || result.status == FeatureStatusKind.PROBE_ERROR,
                     )
-                } else {
-                    results.forEach { result ->
-                        KeyValueRow(
-                            label = result.feature.displayName,
-                            value = result.status.label,
-                            isUnknown = result.status == FeatureStatusKind.PROBE_ERROR,
-                        )
-                    }
                 }
             }
         }

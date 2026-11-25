@@ -8,6 +8,7 @@ import dev.shockstruck.gemininano.model.PermissionMatrix
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
 import dev.shockstruck.gemininano.model.PermissionStatus
 import dev.shockstruck.gemininano.model.PromptConfigStatus
+import dev.shockstruck.gemininano.model.PromptModelConfig
 
 /** The evidence the Provisioning Diagnostics decision line is allowed to use. */
 data class ProvisioningEvidence(
@@ -43,27 +44,50 @@ class ProvisioningDiagnosticsPresenter {
     private fun pccLine(status: PermissionStatus?): String = when (status) {
         null -> "Permission matrix not collected yet."
         PermissionStatus.DENIED ->
-            "PCS PCC = requested · denied: PCS is not a PCS UID on this OS; this is the " +
-                "sandboxed-install gap. It does not by itself prove AICore cannot bind PCS."
+            "PCS PCC = requested · denied: PackageInfo reports the permission requested and " +
+                "checkPermission returned denied. That is the observed grant state only; it does " +
+                "not say why, prove PCS is not a PCC UID, or prove AICore cannot bind PCS."
 
         PermissionStatus.GRANTED ->
-            "PCS PCC = requested · granted: the framework classifies PCS as a PCS UID on this OS."
+            "PCS PCC = requested · granted: both the request and the observed grant are shown; " +
+                "no further meaning is inferred from the grant alone."
+
+        PermissionStatus.GRANT_DISAGREEMENT ->
+            "PCS PCC = requested · grant sources disagree: checkPermission and the " +
+                "requestedPermissionsFlags bit returned different results. Both are shown and " +
+                "neither is treated as authoritative."
+
+        PermissionStatus.GRANTED_NOT_REQUESTED ->
+            "PCS PCC = grant observed · not requested: a grant was observed although " +
+                "PackageInfo does not list the permission as requested; the grant is shown " +
+                "rather than hidden."
 
         PermissionStatus.NOT_REQUESTED ->
-            "PCS PCC = not requested: PCS does not ask for the flag, so the framework cannot " +
-                "classify it as a PCS UID."
+            "PCS PCC = not requested: PackageInfo does not list the permission and no grant " +
+                "was observed."
 
         PermissionStatus.NOT_VISIBLE ->
             "PCS PCC = unknown: the PCS package is not visible, so its permissions cannot be read."
 
+        PermissionStatus.READ_ERROR ->
+            "PCS PCC = unknown: reading the PCS package failed; see the recorded error class " +
+                "and message."
+
         PermissionStatus.UNKNOWN ->
-            "PCS PCC = requested · unknown: checkPermission returned no definitive grant state."
+            "PCS PCC = requested · unknown: neither grant source returned a definitive state."
     }
 
     private fun promptLines(prompt: List<PromptConfigStatus>): List<String> {
         if (prompt.isEmpty()) return listOf("Prompt has not been probed yet.")
 
         val lines = mutableListOf<String>()
+        if (prompt.size == PromptModelConfig.ALL.size &&
+            prompt.all { it.status == FeatureStatusKind.UNAVAILABLE }
+        ) {
+            lines += "Prompt all four configs UNAVAILABLE: ML Kit reported UNAVAILABLE for " +
+                "every ModelConfig. That is the observed status only; it says nothing about " +
+                "the base model, the model registry or whether a download would change it."
+        }
         if (prompt.all { it.errorCode == 606 }) {
             lines += "Prompt all 606: AICore has no ML Kit feature entry for any Prompt config; " +
                 "summarization 622 is not a base-model absence."
@@ -93,10 +117,23 @@ class ProvisioningDiagnosticsPresenter {
             it.componentName.endsWith("PcsGrpcService")
         }
         return when (grpc?.outcome) {
-            PcsBindOutcome.SECURITY_EXCEPTION ->
-                "PCS bind SecurityException: the OS association policy blocks the transport; " +
-                    "the next fix is OS-side." +
-                    (grpc.exceptionMessage?.let { " ($it)" } ?: "")
+            PcsBindOutcome.SECURITY_EXCEPTION -> {
+                val message = grpc.exceptionMessage.orEmpty()
+                if (ASSOCIATION_HINTS.any { it in message.lowercase() }) {
+                    "PCS bind SecurityException: the message names the OS association policy " +
+                        "($message); the next fix is OS-side."
+                } else {
+                    "PCS bind SecurityException: the cause is not identified. The exception " +
+                        "message does not name the OS association policy, so nothing is " +
+                        "attributed to it." +
+                        grpc.exceptionMessage?.let { " ($it)" }.orEmpty()
+                }
+            }
+
+            PcsBindOutcome.BIND_ERROR ->
+                "PCS bind threw ${grpc.exceptionClass ?: "a non-SecurityException"}: " +
+                    "${grpc.exceptionMessage ?: "no message"}. It is not a SecurityException, " +
+                    "so the cause is not identified."
 
             PcsBindOutcome.BINDER_RETURNED ->
                 "PCS bind binder returned: the OS association permits; the next suspect is the " +
@@ -120,5 +157,10 @@ class ProvisioningDiagnosticsPresenter {
 
             null -> "PCS bind results do not include the gRPC service."
         }
+    }
+
+    private companion object {
+        /** Only these message fragments tie a SecurityException to the OS association policy. */
+        val ASSOCIATION_HINTS = listOf("association", "allow-component-access", "component-access")
     }
 }

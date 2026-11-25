@@ -207,7 +207,7 @@ class InvestigationViewModel(
             }
             val duration = System.currentTimeMillis() - startedAt
             logFeatureDownload(feature, download, duration)
-            val refreshed = runCatching { graph.featureSuite.probe(feature) }.getOrElse { probeFailure(it, feature) }
+            val refreshed = graph.probeRunner.probeFeature(feature) { graph.featureSuite.probe(it) }
             logFeatureProbe(refreshed)
             _state.update {
                 it.copy(
@@ -301,13 +301,12 @@ class InvestigationViewModel(
             logMatrix(matrix)
             logSurface(surface)
 
-            if (_state.value.features.isEmpty()) {
-                probeFeaturesInternal()
-            }
+            probeFeaturesInternal()
             probePromptInternal()
-            val summarization = runCatching { graph.summarizationProbe.probe() }
-                .getOrElse { graph.probeCache.probe.value }
-            summarization?.let { graph.probeCache.store(it) }
+            val summarization = graph.probeRunner.probeSummarization {
+                graph.summarizationProbe.probe()
+            }
+            graph.probeCache.store(summarization)
 
             val now = System.currentTimeMillis()
             val snapshot = _state.value
@@ -323,6 +322,7 @@ class InvestigationViewModel(
                     bindResults = snapshot.bindResults,
                     offline = snapshot.offline,
                     events = graph.diagnosticBus.snapshot(),
+                    packages = inspected,
                 ),
             )
             graph.diagnosticBus.log(
@@ -369,19 +369,19 @@ class InvestigationViewModel(
 
     private suspend fun probeFeaturesInternal() {
         _state.update { it.copy(featureBusy = true, featureMessage = null) }
-        val results = GenAiFeature.MATRIX.map { feature ->
-            val result = runCatching { graph.featureSuite.probe(feature) }
-                .getOrElse { probeFailure(it, feature) }
-            logFeatureProbe(result)
-            result
+        val results = graph.probeRunner.probeFeatures(GenAiFeature.MATRIX) {
+            graph.featureSuite.probe(it)
         }
+        results.forEach { logFeatureProbe(it) }
         _state.update { it.copy(featureBusy = false, features = results) }
         recomputeDecision()
     }
 
     private suspend fun probePromptInternal() {
         _state.update { it.copy(promptBusy = true, promptMessage = null) }
-        val results = PromptModelConfig.ALL.map { config -> graph.promptProbe.probe(config) }
+        val results = graph.probeRunner.probePrompts(PromptModelConfig.ALL) {
+            graph.promptProbe.probe(it)
+        }
         results.forEach { logPrompt(it) }
         _state.update { it.copy(promptBusy = false, prompt = results) }
         recomputeDecision()
@@ -397,20 +397,6 @@ class InvestigationViewModel(
             )
         )
         _state.update { it.copy(decision = decision) }
-    }
-
-    private fun probeFailure(t: Throwable, feature: GenAiFeature? = null): FeatureProbeResult {
-        val target = feature ?: GenAiFeature.MATRIX.first()
-        return FeatureProbeResult(
-            feature = target,
-            status = FeatureStatusKind.PROBE_ERROR,
-            failure = dev.shockstruck.gemininano.model.GenAiFailure(
-                errorCode = null,
-                exceptionClass = t.javaClass.name,
-                message = t.message ?: t.javaClass.simpleName,
-            ),
-            probedAtEpochMillis = System.currentTimeMillis(),
-        )
     }
 
     private fun downloadMessage(feature: GenAiFeature, result: DownloadResult): String {

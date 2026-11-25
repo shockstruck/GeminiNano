@@ -248,6 +248,24 @@ class FeatureMatrixTest {
     }
 
     @Test
+    fun aMissingResultIsNotProbedAndNeverAnError() {
+        val notProbed = FeatureProbeResult.notProbed(GenAiFeature.PROOFREADING)
+        assertEquals(FeatureStatusKind.NOT_PROBED, notProbed.status)
+        assertEquals("NOT PROBED", notProbed.statusLabel)
+        assertEquals(FeatureStatusKind.NOT_PROBED_DETAIL, notProbed.detail)
+        assertNull(notProbed.failure)
+        assertFalse(notProbed.downloadOffered)
+        assertFalse(notProbed.inferenceOffered)
+        assertEquals(
+            "unknown — not probed yet",
+            FeatureMatrixFormatting.eligibilityLabel(notProbed),
+        )
+        assertFalse(
+            FeatureMatrixFormatting.renderResult(notProbed).contains("error="),
+        )
+    }
+
+    @Test
     fun omittedFeatureRendersTheExactPublicApiReason() {
         val result = FeatureProbeResult.omitted(
             GenAiFeature.REWRITING,

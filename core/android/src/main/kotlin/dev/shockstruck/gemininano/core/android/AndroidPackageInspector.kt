@@ -8,6 +8,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ComponentInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.PermissionInfo
 import android.content.pm.ProviderInfo
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -19,7 +20,11 @@ import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.MetadataFacts
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
+import dev.shockstruck.gemininano.model.PackageReadError
+import dev.shockstruck.gemininano.model.PackageReadOutcome
+import dev.shockstruck.gemininano.model.PackageReads
 import dev.shockstruck.gemininano.model.PackageVisibility
+import dev.shockstruck.gemininano.model.PermissionDeclaration
 import dev.shockstruck.gemininano.model.PermissionGrantFacts
 import java.security.MessageDigest
 import java.util.Locale
@@ -28,7 +33,9 @@ import java.util.Locale
  * Reads everything Android exposes about the catalogue packages through public
  * PackageManager APIs. Package visibility is declared by the app's scoped `<queries>`
  * block; if a package cannot be seen, [PackageVisibility.NOT_VISIBLE] is reported
- * instead of pretending the package is missing.
+ * instead of pretending the package is missing. Any other read failure is a
+ * [PackageVisibility.READ_ERROR] with its class and message, after smaller flag sets
+ * were tried.
  */
 class AndroidPackageInspector(
     private val context: Context,
@@ -62,16 +69,31 @@ class AndroidPackageInspector(
         packageName: String,
         actions: Map<String, Set<String>>,
     ): PackageFacts {
-        val info = try {
-            @Suppress("DEPRECATION")
-            packageManager.getPackageInfo(packageName, PACKAGE_INFO_FLAGS)
-        } catch (e: PackageManager.NameNotFoundException) {
-            return PackageFacts(packageName = packageName, visibility = PackageVisibility.NOT_VISIBLE)
-        } catch (t: Throwable) {
-            return PackageFacts(packageName = packageName, visibility = PackageVisibility.NOT_VISIBLE)
+        val outcome = PackageReads.withFallbacks(
+            attempts = PACKAGE_INFO_FLAG_SETS.map { flags ->
+                { packageManager.getPackageInfo(packageName, flags) }
+            },
+            isNameNotFound = { it is PackageManager.NameNotFoundException },
+        )
+        val info = when (outcome) {
+            PackageReadOutcome.NotVisible ->
+                return PackageFacts(packageName = packageName, visibility = PackageVisibility.NOT_VISIBLE)
+
+            is PackageReadOutcome.Failed ->
+                return PackageFacts(
+                    packageName = packageName,
+                    visibility = PackageVisibility.READ_ERROR,
+                    readError = outcome.error,
+                )
+
+            is PackageReadOutcome.Success -> outcome.value
         }
 
         val requestedPermissions = info.requestedPermissions?.toList().orEmpty()
+        val permissionNames = buildList {
+            addAll(requestedPermissions)
+            addAll(PackageCatalog.NAMED_PERMISSIONS.filter { it !in requestedPermissions })
+        }
         return PackageFacts(
             packageName = packageName,
             visibility = PackageVisibility.VISIBLE,
@@ -83,11 +105,13 @@ class AndroidPackageInspector(
             minSdk = if (Build.VERSION.SDK_INT >= 24) info.applicationInfo?.minSdkVersion else null,
             enabled = info.applicationInfo?.enabled,
             requestedPermissions = requestedPermissions,
-            permissionGrants = PackageCatalog.NAMED_PERMISSIONS.map { permission ->
+            permissionGrants = permissionNames.map { permission ->
                 PermissionGrantFacts(
                     permission = permission,
                     state = checkPermission(packageName, permission),
                     requested = requestedPermissions.contains(permission),
+                    requestedFlagsGrant = requestedFlagsGrant(info, permission),
+                    declaration = declaration(permission),
                 )
             },
             components = buildList {
@@ -97,6 +121,55 @@ class AndroidPackageInspector(
                 addAll(componentFacts(ComponentKind.PROVIDER, info.providers, actions))
             },
             metadata = metadataFacts(info.applicationInfo?.metaData),
+        )
+    }
+
+    /**
+     * The `requestedPermissionsFlags` grant bit for one requested permission. `null`
+     * when the OS did not report it (for example after a smaller-flag retry), never a
+     * guessed value.
+     */
+    private fun requestedFlagsGrant(info: PackageInfo, permission: String): Boolean? {
+        val requested = info.requestedPermissions ?: return null
+        val index = requested.indexOf(permission)
+        if (index < 0) return null
+        val flags = info.requestedPermissionsFlags ?: return null
+        if (index >= flags.size) return null
+        @Suppress("DEPRECATION")
+        return flags[index] and PackageInfo.REQUESTED_PERMISSION_GRANTED != 0
+    }
+
+    /**
+     * The OS declaration of a permission through `getPermissionInfo`: declaring package,
+     * protection base and flags, or "not defined on this OS" for `NameNotFoundException`.
+     */
+    private fun declaration(permission: String): PermissionDeclaration = try {
+        val info = packageManager.getPermissionInfo(permission, 0)
+        val base = if (Build.VERSION.SDK_INT >= 28) {
+            info.protection
+        } else {
+            @Suppress("DEPRECATION")
+            info.protectionLevel and PermissionInfo.PROTECTION_MASK_BASE
+        }
+        val flags = if (Build.VERSION.SDK_INT >= 28) {
+            info.protectionFlags
+        } else {
+            @Suppress("DEPRECATION")
+            info.protectionLevel and PermissionInfo.PROTECTION_MASK_FLAGS
+        }
+        PermissionDeclaration(
+            defined = true,
+            declaringPackage = info.packageName,
+            protectionBase = base,
+            protectionFlags = flags,
+        )
+    } catch (e: PackageManager.NameNotFoundException) {
+        PermissionDeclaration(defined = false)
+    } catch (t: Throwable) {
+        PermissionDeclaration(
+            defined = false,
+            lookupErrorClass = t.javaClass.name,
+            lookupErrorMessage = t.message ?: t.javaClass.simpleName,
         )
     }
 
@@ -145,6 +218,7 @@ class AndroidPackageInspector(
             exported = component.exported,
             requiredPermission = requiredPermission(component),
             enabled = component.enabled,
+            effectivelyEnabled = component.isEnabled,
             intentActions = actions["${kind.name}:${component.name}"].orEmpty().sorted(),
             authorities = (component as? ProviderInfo)?.authority?.let { listOf(it) }.orEmpty(),
             metaDataKeys = component.metaData?.keySet()?.sorted().orEmpty(),
@@ -250,12 +324,23 @@ class AndroidPackageInspector(
     }
 
     private companion object {
-        const val PACKAGE_INFO_FLAGS = PackageManager.GET_PERMISSIONS or
-            PackageManager.GET_ACTIVITIES or
-            PackageManager.GET_SERVICES or
-            PackageManager.GET_RECEIVERS or
-            PackageManager.GET_PROVIDERS or
-            PackageManager.GET_META_DATA or
-            PackageManager.GET_SIGNING_CERTIFICATES
+        /**
+         * The read ladder: all facts first, then only permissions/metadata, then the
+         * minimum the OS will return. A smaller set can succeed where a larger one throws.
+         */
+        val PACKAGE_INFO_FLAG_SETS: List<Int> = listOf(
+            PackageManager.GET_PERMISSIONS or
+                PackageManager.GET_ACTIVITIES or
+                PackageManager.GET_SERVICES or
+                PackageManager.GET_RECEIVERS or
+                PackageManager.GET_PROVIDERS or
+                PackageManager.GET_META_DATA or
+                PackageManager.GET_SIGNING_CERTIFICATES or
+                PackageManager.GET_DISABLED_COMPONENTS,
+            PackageManager.GET_PERMISSIONS or
+                PackageManager.GET_META_DATA or
+                PackageManager.GET_DISABLED_COMPONENTS,
+            0,
+        )
     }
 }

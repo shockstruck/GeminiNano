@@ -77,7 +77,8 @@ class OverviewPresenter(
         snapshot.probe?.baseModelName?.takeIf { it.isNotBlank() } ?: PackageFactsFormatting.UNKNOWN
 
     private fun aicoreValue(facts: PackageFacts): String = when {
-        facts.visibility == PackageVisibility.NOT_VISIBLE -> PackageFactsFormatting.NOT_VISIBLE
+        facts.visibility != PackageVisibility.VISIBLE ->
+            PackageFactsFormatting.visibilityLabel(facts)
         else -> "${facts.versionName ?: PackageFactsFormatting.UNKNOWN} " +
             "(versionCode ${facts.versionCode?.toString() ?: PackageFactsFormatting.UNKNOWN})"
     }

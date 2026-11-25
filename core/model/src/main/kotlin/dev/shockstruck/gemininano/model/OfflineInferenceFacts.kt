@@ -53,6 +53,9 @@ data class OfflineInferenceResult(
                     result.status == FeatureStatusKind.AVAILABLE ->
                         "no inference was returned"
 
+                    result.status == FeatureStatusKind.NOT_PROBED ->
+                        "not probed yet; run the AICore feature probe first"
+
                     else ->
                         "status is ${result.status.label}; nothing to run"
                 },

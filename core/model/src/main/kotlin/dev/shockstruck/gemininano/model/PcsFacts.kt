@@ -4,7 +4,13 @@ package dev.shockstruck.gemininano.model
 enum class PcsBindOutcome(val label: String) {
     BINDER_RETURNED("binder returned"),
     NULL_BINDING("null binding"),
+
+    /** Only a real `SecurityException`, never another throwable. */
     SECURITY_EXCEPTION("SecurityException"),
+
+    /** `bindService` threw something that is not a `SecurityException`. */
+    BIND_ERROR("bindService threw"),
+
     BIND_REFUSED("bindService returned false"),
     TIMEOUT("timeout"),
     BINDING_DIED("binding died"),
@@ -79,6 +85,23 @@ class PcsBindSession(
             PcsBindResult(
                 componentName = componentName,
                 outcome = PcsBindOutcome.SECURITY_EXCEPTION,
+                exceptionClass = exceptionClass,
+                exceptionMessage = exceptionMessage,
+                elapsedMillis = elapsed(nowMillis),
+                serviceDisconnected = serviceDisconnected,
+            ),
+        )
+
+    /** Any non-`SecurityException` throwable keeps its own outcome and class. */
+    fun onBindException(
+        exceptionClass: String,
+        exceptionMessage: String?,
+        nowMillis: Long,
+    ): PcsBindResult? =
+        complete(
+            PcsBindResult(
+                componentName = componentName,
+                outcome = PcsBindOutcome.BIND_ERROR,
                 exceptionClass = exceptionClass,
                 exceptionMessage = exceptionMessage,
                 elapsedMillis = elapsed(nowMillis),

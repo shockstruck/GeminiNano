@@ -16,6 +16,7 @@ import dev.shockstruck.gemininano.core.genai.UnavailableSummarizationProbe
 import dev.shockstruck.gemininano.data.LogExportManager
 import dev.shockstruck.gemininano.data.ProbeCache
 import dev.shockstruck.gemininano.data.SettingsRepository
+import dev.shockstruck.gemininano.diagnostics.BoundedProbeRunner
 import dev.shockstruck.gemininano.diagnostics.DecisionTree
 import dev.shockstruck.gemininano.diagnostics.DiagnosticBus
 import dev.shockstruck.gemininano.diagnostics.ExportMetadata
@@ -77,6 +78,11 @@ class AppGraph(context: Context) {
         }
 
     val probeCache = ProbeCache()
+
+    /** Every probe runs isolated behind its own timeout. */
+    val probeRunner = BoundedProbeRunner(
+        elapsedClock = { android.os.SystemClock.elapsedRealtime() },
+    )
 
     private val overviewPresenter = OverviewPresenter(DecisionTree())
 
