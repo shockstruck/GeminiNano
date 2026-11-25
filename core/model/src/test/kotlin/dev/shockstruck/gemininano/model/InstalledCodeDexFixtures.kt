@@ -337,6 +337,37 @@ internal object SyntheticInsns {
     fun moveObject(destination: Int, source: Int): IntArray =
         intArrayOf(0x07 or (destination shl 8) or (source shl 12))
 
+    fun move16(destination: Int, source: Int): IntArray =
+        intArrayOf(0x03, destination and 0xFFFF, source and 0xFFFF)
+
+    fun moveWide16(destination: Int, source: Int): IntArray =
+        intArrayOf(0x06, destination and 0xFFFF, source and 0xFFFF)
+
+    fun moveObject16(destination: Int, source: Int): IntArray =
+        intArrayOf(0x09, destination and 0xFFFF, source and 0xFFFF)
+
+    fun invokeCustom(registers: IntArray, callSiteIndex: Int): IntArray =
+        invoke35c(0xfc, registers, callSiteIndex)
+
+    fun invokeCustomRange(count: Int, firstRegister: Int, callSiteIndex: Int): IntArray =
+        intArrayOf(0xfd or (count shl 8), callSiteIndex, firstRegister)
+
+    fun invokePolymorphic(registers: IntArray, methodIndex: Int, protoIndex: Int): IntArray {
+        require(registers.size <= 5)
+        val padded = registers + IntArray(5 - registers.size)
+        val unit0 = 0xfa or (registers.size shl 12) or ((padded[4] and 0xF) shl 8)
+        val unit2 = (padded[0] and 0xF) or ((padded[1] and 0xF) shl 4) or
+            ((padded[2] and 0xF) shl 8) or ((padded[3] and 0xF) shl 12)
+        return intArrayOf(unit0, methodIndex, unit2, protoIndex)
+    }
+
+    fun invokePolymorphicRange(
+        count: Int,
+        firstRegister: Int,
+        methodIndex: Int,
+        protoIndex: Int,
+    ): IntArray = intArrayOf(0xfb or (count shl 8), methodIndex, firstRegister, protoIndex)
+
     fun moveResult(register: Int): IntArray = intArrayOf(0x0a or (register shl 8))
 
     fun invokeStatic(registers: IntArray, methodIndex: Int): IntArray =

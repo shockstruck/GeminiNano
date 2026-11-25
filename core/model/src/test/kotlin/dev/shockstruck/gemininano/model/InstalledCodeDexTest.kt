@@ -200,6 +200,29 @@ class InstalledCodeDexTest {
         }
     }
 
+    @Test
+    fun acceptsAnUnalignedDataSectionAsArtDoes() {
+        val valid = minimalDex(35)
+        val dataOffset = u32(valid, 0x6c)
+        val dataSize = u32(valid, 0x68)
+        assertTrue(dataOffset > 0x70)
+        assertTrue(dataSize > 1)
+
+        val unalignedOffset = valid.copyOf()
+        SyntheticDexBuilder.writeIntAt(unalignedOffset, 0x6c, dataOffset - 1)
+        InstalledCodeDex.parse(unalignedOffset)
+
+        val unalignedSize = valid.copyOf()
+        SyntheticDexBuilder.writeIntAt(unalignedSize, 0x68, dataSize - 1)
+        InstalledCodeDex.parse(unalignedSize)
+    }
+
+    private fun u32(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF) or
+            ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+
     private fun minimalDex(version: Int = 35): ByteArray = minimalBuilder(version).build()
 
     private fun minimalBuilder(version: Int = 35): SyntheticDexBuilder {

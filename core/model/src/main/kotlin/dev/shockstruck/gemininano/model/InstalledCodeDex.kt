@@ -89,11 +89,13 @@ class InstalledCodeInstruction internal constructor(
  * fall outside the file. The checksum and signature fields are not verified, because
  * `classes*.dex` entries copied from an installed APK are read, not executed.
  *
- * Alignment follows the DEX format specification: sections (link, string_ids,
- * type_ids, proto_ids, field_ids, method_ids, class_defs and data) and the map list
- * must be four-byte offset-aligned (constraints G7); `type_list` (interfaces and proto
+ * Alignment follows the DEX format specification and ART's verifier: the string, type,
+ * proto, field, method and class definition sections, the link section and the map list
+ * are four-byte offset-aligned (constraints G7); `type_list` (interfaces and proto
  * parameters), `annotations_directory_item` and `code_item` are four-byte aligned;
- * `class_data_item` and `encoded_array_item` (static values) are byte-aligned.
+ * `class_data_item`, `encoded_array_item` (static values) and the data section are
+ * byte-aligned, and the data section is only range-checked because ART accepts it
+ * unaligned (`dex_file_verifier.cc`, the data check with `alignment = 0`).
  *
  * Strings are decoded on demand. Nothing outside the tables, decoded strings and code
  * items is exposed, and no bytecode is retained after the caller drops this object.
@@ -635,10 +637,9 @@ class InstalledCodeDex private constructor(
             if (version < 41) {
                 val dataSize = intAt(0x68)
                 val dataOffset = intAt(0x6c)
-                requireSection(dataOffset, dataSize, 1, headerSize, limit, "data")
-                if (dataSize % 4 != 0L) {
+                if (dataSize > 0 && (dataOffset < headerSize || dataOffset > limit || dataSize > limit - dataOffset)) {
                     throw InstalledCodeFormatException(
-                        "data size $dataSize is not an even multiple of four, as the header requires",
+                        "data section at $dataOffset of $dataSize bytes is outside the file",
                     )
                 }
             }
@@ -930,7 +931,7 @@ class InstalledCodeDex private constructor(
 
                 0x03, 0x06, 0x09 -> {
                     destination = unit1 and 0xFFFF
-                    moveSource = unit1 ushr 16
+                    moveSource = unit2
                     destinationWide = opcode == 0x06
                     isMoveObject = opcode == 0x09
                 }

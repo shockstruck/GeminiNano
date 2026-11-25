@@ -219,6 +219,10 @@ private fun resolveDefault(
         if (instruction.isPayload || instruction.isBranch) continue
         trackLiteral(dex, instruction, literals)
     }
+    literals[occurrence.register] = LiteralState(
+        Literal.StringLiteral(occurrence.matched),
+        occurrenceAddress,
+    )
     val stringRegisters = mutableSetOf(occurrence.register)
     var index = occurrence.instructionIndex + 1
     while (index < instructions.size) {
@@ -228,16 +232,22 @@ private fun resolveDefault(
             continue
         }
         if (instruction.isBranch) return InstalledCodeDefaultValue.Unresolved
-        if (instruction.isInvoke && instruction.invokeMethodIndex >= 0) {
-            val resolved = resolveFromInvoke(
-                dex = dex,
-                instruction = instruction,
-                stringRegisters = stringRegisters,
-                literals = literals,
-                barriers = barriers,
-                occurrenceAddress = occurrenceAddress,
-            )
-            if (resolved != null) return resolved
+        if (instruction.isInvoke) {
+            if (instruction.invokeMethodIndex < 0) {
+                if (instruction.invokeRegisters.any { it in stringRegisters }) {
+                    return InstalledCodeDefaultValue.Unresolved
+                }
+            } else {
+                val resolved = resolveFromInvoke(
+                    dex = dex,
+                    instruction = instruction,
+                    stringRegisters = stringRegisters,
+                    literals = literals,
+                    barriers = barriers,
+                    occurrenceAddress = occurrenceAddress,
+                )
+                if (resolved != null) return resolved
+            }
         }
         updateStringRegisters(instruction, stringRegisters)
         if (stringRegisters.isEmpty()) return InstalledCodeDefaultValue.Unresolved
