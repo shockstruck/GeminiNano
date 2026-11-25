@@ -523,13 +523,16 @@ class FullDiagnosticsReportBuilder {
         }
 
         out.appendLine()
-        out.append("== First failing provisioning dependency ==\n")
+        out.append("== First step shown to fail ==\n")
         out.append("App user: ").append(input.appUser?.label ?: "not read").append('\n')
         val dependencies = input.dependencies
         if (dependencies == null) {
             out.append("not evaluated\n")
         } else {
             out.append("Result: ").append(dependencies.resultLabel).append('\n')
+            out.append("Earlier steps not passed: ")
+                .append(dependencies.earlierStepsLabel.ifEmpty { "none" })
+                .append('\n')
             out.append("Summary: ").append(dependencies.summary).append('\n')
             dependencies.steps.forEachIndexed { index, step ->
                 out.append(index + 1).append(". [").append(step.outcome.label).append("] ")
@@ -1261,6 +1264,9 @@ class FullDiagnosticsReportBuilder {
 
         InstalledCodeDefaultValue.Unresolved ->
             "{\"type\": \"unresolved\", \"value\": null}"
+
+        InstalledCodeDefaultValue.NoFollowingArgument ->
+            "{\"type\": \"no-following-argument\", \"value\": null}"
     }
 
     private fun provisioningDependenciesJson(
@@ -1272,6 +1278,12 @@ class FullDiagnosticsReportBuilder {
             "\"firstFailingStep\": " + quote(evaluation.firstFailingStep?.id?.label) + ", " +
             "\"earliestUnsettledStep\": " + quote(evaluation.firstUnsettledStep?.id?.label) + ", " +
             "\"summary\": " + quote(evaluation.summary) + ", " +
+            "\"earlierStepsNotPassed\": " + array(evaluation.earlierStepsNotPassed) {
+                "{" +
+                    "\"step\": " + quote(it.id.label) + ", " +
+                    "\"outcome\": " + quote(it.outcome.label) +
+                    "}"
+            } + ", " +
             "\"steps\": " + array(evaluation.steps) { step ->
                 "{" +
                     "\"step\": " + quote(step.id.label) + ", " +

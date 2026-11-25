@@ -77,7 +77,7 @@ class AppGraph(context: Context) {
     /** Whether this app runs in the system (owner) user; public UserManager call only. */
     val appUserFacts = AppUserFactsSource(appContext)
 
-    /** Pure ordered evaluation of the provisioning chain Stage 9 traced. */
+    /** Pure ordered evaluation of the provisioning chain the public source trace laid out. */
     val provisioningDependencies = ProvisioningDependencyEvaluator()
 
     val permissionMatrixProbe = PermissionMatrixProbe(

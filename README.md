@@ -5,8 +5,8 @@ surfaces on GrapheneOS. Version 0.7.0 reports what an ordinary sandboxed app can
 observe, probes every public ML Kit GenAI capability independently, offers only
 user-triggered downloads, runs a fixed-input inference matrix, keeps the original
 on-device summarization, reads the installed AICore and PCS code as narrow static facts,
-and names the first provisioning dependency the installed-code evidence shows failing (or
-says it cannot be determined). It does not pretend to provision anything it cannot.
+and names the first provisioning step the installed-code evidence shows failing (or says
+it cannot be determined). It does not pretend to provision anything it cannot.
 
 Derived from the public [anandgaur22/GeminiNano](https://github.com/anandgaur22/GeminiNano)
 demo. Internal experimental derivative; not affiliated with Google.
@@ -107,19 +107,26 @@ updated.
    **Run Full Diagnostics**, wait for `Report ready`, then **Export JSON** and **Export text**
    (a Storage Access Framework file picker, or the export directory configured in Settings).
    The same action reads the installed AICore and PCS `classes*.dex` files once, off the main
-   thread, and evaluates the provisioning chain Stage 9 traced. The report card names the
-   first failing dependency, or says it cannot be determined. Every step is `passed`,
+   thread, and evaluates the provisioning chain the public source trace laid out. The report
+   card names the first step shown to fail, or says it cannot be determined, and lists every
+   earlier step that is not passed. Every step is `passed`,
    `failed`, `not observable` or `not tested`, with its evidence and that evidence's strength
-   (`observed`, `inferred`, `dump only`, `source trace`). A July 2025 dump fact never decides a
-   step, a step that cannot be observed is never rendered as passed or failed, and a flag step
-   is `failed` only from all four of: the marker present and loaded by code, one consistent
-   literal default of the right type, the `READ_DEVICE_CONFIG` check found beside it, and the
-   permission observed denied. The default shown is the literal argument right after the flag
-   name; a mixed or unresolved default is "default not established"; a marker with no
-   referencing method is "in the string table, loaded by no instruction". A string-table
-   match is not proof the code uses it, and an installed-code fact that contradicts the dump
-   is exported as a contradiction. Assets are listed as a candidate non-DeviceConfig input
-   only: presence is not use.
+   (`observed`, `inferred`, `dump only`, `source trace`). A July 2025 public-dump fact never
+   decides a step, a step that cannot be observed is never rendered as passed or failed, and a
+   flag step is `failed` only from all four of: the marker present and loaded by code, one
+   established literal default of the right type, the `READ_DEVICE_CONFIG` check found beside
+   it, and the permission observed denied. A flag default is evaluated per exact flag name:
+   every default site of that name must carry the same single literal; a flag passed with no
+   parameter after it is shown as "no following argument" and is not a default site; an
+   unresolved or mixed site leaves the step not observable. That the denied permission makes
+   the flag read its default is exported as inferred, because the check is found in the
+   package, not on each flag's read path. A marker with no referencing method is "in the
+   string table, loaded by no instruction". A string-table match is not proof the code uses
+   it, and an installed-code fact that contradicts the dump is exported as a contradiction.
+   The association step compares AICore's signer only with the policy entry named for AICore,
+   needs AICore's own complete manifest (no policy, or a PCS entry matching PCS's signer), and
+   reports a PCS-side mismatch as inferred because the enforcement flag is not published.
+   Assets are listed as a candidate non-DeviceConfig input only: presence is not use.
    The JSON report contains:
    the report schema and generation time; the app identity; device facts; the full permission
    matrix with *requested*, `checkPermission`, the `requestedPermissionsFlags` bit and the
@@ -145,9 +152,10 @@ updated.
    defaults, the `READ_DEVICE_CONFIG` check fact, `DeviceConfig` method names, asset entry
    names and sizes, and any dex failure class/message, with the elapsed time per package) and
    the ordered `provisioningDependencies` evaluation (every step's outcome, summary and
-   evidence with its strength, the first failing step, and the earliest step the evidence
-   cannot settle); the stored bind history per component (at most five, each with its time,
-   app version and PCS versionCode) beside the current bind rows; the offline
+   evidence with its strength, the first step shown to fail, every earlier step not passed, and
+   the earliest step the evidence cannot settle); the stored bind history per component (at
+   most five, each with its time, app version and PCS versionCode) beside the current bind
+   rows; the offline
    inference matrix if it has run; package versionCode and signer SHA-256 for AICore, PCS, ASI
    and GMS; the relevant `getSystemAvailableFeatures` names; the explicitly untested
    operations; and the diagnostic event log. `BIND_SERVICE` rows carry the holder's
@@ -235,7 +243,7 @@ and for INDETERMINATE the still-open candidates each with its missing observatio
 | AICore Features | Implemented: independent Prompt probe over the four `ModelConfig` combinations (`STABLE/FAST`, `STABLE/FULL`, `PREVIEW/FAST`, `PREVIEW/FULL`) plus the full public GenAI matrix — Rewriting, Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech Translation and Text to Speech. Each row is an isolated probe with status, feature id, error class/code/message, base model name or signature only when returned, latency, and a download button only when ML Kit says DOWNLOADABLE. The retained summarization status is shown separately |
 | Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, and safe `bindService` outcomes for the services the installed PCS declares (the current `astrea` names first; the open-source names are aliases). Bind observations persist locally (last five per component) and each row is marked current run, earlier run with its time, or not run, with binding, RPC authorization and provisioning kept as three separate facts. PCS settings and the network usage log have explicit launch controls; the item-details activity is listed but not launched. PCS settings are opened by explicit component resolution, not an `ACTION_APPLICATION_PREFERENCES` intent |
 | Model Manager | Implemented: per-feature observed status, explicit download only when DOWNLOADABLE, progress from the public callbacks, retry after failure, no catalog, no automatic download, no invented cancel |
-| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, installed-code facts, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the ordered first-failing-dependency evaluation over the Stage 9 chain, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report. Its **Include PCS bind probe** option is unchecked by default, applies to that run only and is never remembered; ticked, the bind finishes before the report is built. The installed-code read happens inside that same action, off the main thread; one package's failure never fails the report |
+| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, installed-code facts, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the ordered first-step-shown-to-fail evaluation over the traced provisioning chain, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report. Its **Include PCS bind probe** option is unchecked by default, applies to that run only and is never remembered; ticked, the bind finishes before the report is built. The installed-code read happens inside that same action, off the main thread; one package's failure never fails the report |
 | Offline Inference | Implemented: one short fixed-input inference per AVAILABLE feature with exact failures and latency; the user must disable connectivity externally and no offline success is claimed from this app alone |
 | Privacy | Implemented |
 | Diagnostic Logs | Implemented: bounded local event bus, search/filter, copy, JSON and text export through SAF, redaction |

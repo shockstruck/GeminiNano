@@ -543,6 +543,8 @@ class InvestigationViewModel(
                     fullReportBusy = false,
                     fullReport = report,
                     fullReportMessage = "Report ready. ${dependencies.resultLabel}. " +
+                        "Earlier steps not passed: " +
+                        "${dependencies.earlierStepsLabel.ifEmpty { "none" }}. " +
                         "Export it as JSON or text; no download was performed.",
                     lastObservationAtEpochMillis = null,
                 )

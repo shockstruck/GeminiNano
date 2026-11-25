@@ -2,6 +2,7 @@ package dev.shockstruck.gemininano.diagnostics
 
 import dev.shockstruck.gemininano.model.AppUserFacts
 import dev.shockstruck.gemininano.model.InstalledCodeDefaultValue
+import dev.shockstruck.gemininano.model.InstalledCodeMarkerFacts
 import dev.shockstruck.gemininano.model.InstalledCodeOutcome
 import dev.shockstruck.gemininano.model.InstalledCodePackageEvidence
 import dev.shockstruck.gemininano.model.InstalledCodePackageFacts
@@ -16,8 +17,9 @@ import dev.shockstruck.gemininano.model.PlatformPermissions
 import dev.shockstruck.gemininano.model.PlatformPrincipals
 
 /**
- * One step of the provisioning chain Stage 9 traced, in the order the dump shows them.
- * The order is the evaluation order: the first step shown to fail is the answer.
+ * One step of the provisioning chain the public source trace laid out, in the order that
+ * trace shows them. The order is the evaluation order: the first step shown to fail is
+ * the answer.
  */
 enum class DependencyStepId(val label: String) {
     CLIENT_STATUS_CHECK("client status check (ML Kit)"),
@@ -83,14 +85,35 @@ data class ProvisioningDependencyEvaluation(
     val firstUnsettledStep: DependencyStep?
         get() = steps.firstOrNull { it.outcome == DependencyStepOutcome.NOT_OBSERVABLE }
 
+    /** Every step before the first failure whose outcome is not passed, in chain order. */
+    val earlierStepsNotPassed: List<DependencyStep>
+        get() {
+            val failing = firstFailingStep ?: return emptyList()
+            return steps.takeWhile { it.id != failing.id }
+                .filter { it.outcome != DependencyStepOutcome.PASSED }
+        }
+
+    val earlierStepsLabel: String
+        get() = earlierStepsNotPassed.joinToString("; ") {
+            "${it.id.label} (${it.outcome.label})"
+        }
+
+    /**
+     * The headline names the earliest step shown to fail. Earlier steps that are not
+     * passed are named beside it, because an unsettled step before it means the failure
+     * is the first one the evidence shows, not proof the chain failed there first.
+     */
     val resultLabel: String
-        get() = firstFailingStep?.let { "First failing dependency: ${it.id.label}" }
+        get() = firstFailingStep?.let { "First step shown to fail: ${it.id.label}" }
             ?: "Cannot be determined: no step is shown to fail"
 
     val summary: String
         get() {
             val failing = firstFailingStep
-            if (failing != null) return failing.summary
+            if (failing != null) {
+                val earlier = earlierStepsLabel.ifEmpty { "none" }
+                return failing.summary + " Earlier steps not passed: $earlier."
+            }
             val unsettled = firstUnsettledStep
                 ?: return "Every traced step passed; the chain itself did not fail here."
             return "No step is shown to fail. The earliest step the evidence cannot settle is " +
@@ -108,18 +131,24 @@ data class DependencyEvaluationInput(
 )
 
 /**
- * Pure ordered evaluation of the provisioning chain Stage 9 traced.
+ * Pure ordered evaluation of the provisioning chain the public source trace laid out.
  *
  * A step is [DependencyStepOutcome.FAILED] only from a fact about the installed package
  * plus an observed denial or absence. A dump fact is labelled
  * [DependencyEvidenceStrength.DUMP_ONLY] and never decides a step. A step that cannot be
  * observed is never reported as passed or failed.
  *
- * The flag gates (the AICore build id and PCS `ProtectedDownload__enabled`) fail only
- * when all of the following hold: the marker is present and loaded by code, every
- * reference resolves the same single literal default, that literal fits the flag's type,
- * a method referencing `READ_DEVICE_CONFIG` also invokes a permission check, and
- * `READ_DEVICE_CONFIG` is observed denied. Anything less is "not observable".
+ * The flag gates (the AICore build id and PCS `ProtectedDownload__enabled`) are evaluated
+ * per exact flag name. A name's default is established only when it has at least one
+ * default site and every site carries the same single literal. A flag passed with no
+ * parameter after it is [InstalledCodeDefaultValue.NoFollowingArgument], not a default
+ * site; an argument that cannot be resolved is
+ * [InstalledCodeDefaultValue.Unresolved] and blocks the step. A gate fails only when at
+ * least one exact name is established, every established name reads the disabling
+ * default of the flag's type, no name is unresolved or mixed, a method referencing
+ * `READ_DEVICE_CONFIG` also invokes a permission check, and the permission is observed
+ * denied. That the denial makes the flag read its default is inferred: the check is
+ * found in the package, not on this flag's read path.
  */
 class ProvisioningDependencyEvaluator {
 
@@ -146,7 +175,7 @@ class ProvisioningDependencyEvaluator {
                 },
                 dumpDefault = "0",
             ),
-            associationStep(input.manifests, aicore),
+            associationStep(input.manifests, input.packages, aicore),
             flagGateStep(
                 id = DependencyStepId.PCS_PROTECTED_DOWNLOAD,
                 marker = PROTECTED_DOWNLOAD_MARKER,
@@ -161,25 +190,26 @@ class ProvisioningDependencyEvaluator {
             ),
             laterStep(
                 DependencyStepId.PCS_MANIFEST_RPC,
-                "PCS reads DeviceConfig only with READ_DEVICE_CONFIG, and the July 2025 dump " +
-                    "rejects GetManifestConfig with \"feature disabled\" while the flag is " +
+                "PCS reads DeviceConfig only with READ_DEVICE_CONFIG, and the July 2025 public " +
+                    "dump rejects GetManifestConfig with \"feature disabled\" while the flag is " +
                     "false. The app cannot send that RPC or observe AICore's request, so no " +
                     "installed-code fact or observation decides this step.",
-                "July 2025 PCS dump (Stage 6f and Stage 9)",
+                "July 2025 public PCS dump",
             ),
             laterStep(
                 DependencyStepId.MANIFEST_TO_MODEL,
-                "Stage 9 traced no download call from the manifest to MDD file groups; the " +
-                    "flags it named (for example AicModels__protected_download_v2_enabled) were " +
-                    "read in the dump only. No observation of a download, verification or " +
-                    "registration is available to this app.",
-                "Stage 9 ordered trace",
+                "The public source trace found no download call from the manifest to MDD file " +
+                    "groups; the flags it named (for example " +
+                    "AicModels__protected_download_v2_enabled) were read in the dump only. No " +
+                    "observation of a download, verification or registration is available to " +
+                    "this app.",
+                "public source trace",
             ),
             laterStep(
                 DependencyStepId.ISOLATED_INFERENCE,
                 "Neither the download nor the isolated inference start was traced, and this app " +
                     "cannot observe AICore's process. Nothing here can be called passed or failed.",
-                "Stage 9 ordered trace",
+                "public source trace",
             ),
         )
         return ProvisioningDependencyEvaluation(steps)
@@ -188,14 +218,15 @@ class ProvisioningDependencyEvaluator {
     private fun clientStatusCheckStep() = DependencyStep(
         id = DependencyStepId.CLIENT_STATUS_CHECK,
         outcome = DependencyStepOutcome.NOT_TESTED,
-        summary = "Stage 9 did not trace the ML Kit client status check. This app's own Prompt " +
-            "and summarization rows are client observations, not this step's outcome.",
+        summary = "The public source trace did not cover the ML Kit client status check. This " +
+            "app's own Prompt and summarization rows are client observations, not this step's " +
+            "outcome.",
         evidence = listOf(
             DependencyEvidence(
                 statement = "The client status check is the entry point of the chain and was not " +
                     "traced; it is reported as not tested rather than passed or failed.",
                 strength = DependencyEvidenceStrength.SOURCE_TRACE,
-                source = "Stage 9 ordered trace",
+                source = "public source trace",
             ),
         ),
     )
@@ -206,10 +237,10 @@ class ProvisioningDependencyEvaluator {
     ): DependencyStep {
         val id = DependencyStepId.SYSTEM_USER
         val dumpEvidence = DependencyEvidence(
-            statement = "In the July 2025 AICore dump, model populators are set up only for the " +
-                "system (owner) user.",
+            statement = "In the July 2025 public AICore dump, model populators are set up only " +
+                "for the system (owner) user.",
             strength = DependencyEvidenceStrength.DUMP_ONLY,
-            source = "July 2025 public AICore dump (Stage 9 review)",
+            source = "July 2025 public AICore dump",
         )
         if (appUser == null) {
             return DependencyStep(
@@ -237,10 +268,11 @@ class ProvisioningDependencyEvaluator {
 
             false -> DependencyStep(
                 id,
-                DependencyStepOutcome.FAILED,
-                "This app runs in a secondary user profile, not the system (owner) user. In the " +
-                    "July 2025 AICore dump populators exist only for the system user, so " +
-                    "provisioning would not start. Next step: install and test in the owner profile.",
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "This app runs in a secondary user profile, not the system (owner) user. The " +
+                    "July 2025 public AICore dump sets up model populators only for the system " +
+                    "user, but a dump fact is not this build. This is a candidate cause, not a " +
+                    "failed step; the plain next step is to install and test in the owner profile.",
                 evidence + DependencyEvidence(
                     statement = "UserManager.isSystemUser() reported false for this app's process.",
                     strength = DependencyEvidenceStrength.OBSERVED,
@@ -284,16 +316,16 @@ class ProvisioningDependencyEvaluator {
     private fun populatorGateStep() = DependencyStep(
         id = DependencyStepId.AICORE_POPULATOR_GATE,
         outcome = DependencyStepOutcome.NOT_OBSERVABLE,
-        summary = "The July 2025 dump returns no populator unless a second flag holds; that " +
-            "flag's name and default were not read, and no allowlisted installed-code marker " +
-            "identifies it, so the installed code cannot settle this step.",
+        summary = "The July 2025 public dump returns no populator unless a second flag holds; " +
+            "that flag's name and default were not read, and no allowlisted installed-code " +
+            "marker identifies it, so the installed code cannot settle this step.",
         evidence = listOf(
             DependencyEvidence(
                 statement = "aicore_dump bem.java: case 0 returns no populator unless " +
                     "rq.z(context) (UserManager.isSystemUser()) and beg.d(flag) hold; the flag's " +
                     "default was not read.",
                 strength = DependencyEvidenceStrength.DUMP_ONLY,
-                source = "July 2025 public AICore dump (Stage 9 review)",
+                source = "July 2025 public AICore dump",
             ),
         ),
     )
@@ -326,11 +358,11 @@ class ProvisioningDependencyEvaluator {
         dumpDefault: String,
     ): DependencyStep {
         val dumpEvidence = DependencyEvidence(
-            statement = "July 2025 dump: the $namespace namespace reads $marker only with " +
-                "READ_DEVICE_CONFIG and its default is $dumpDefault. That dump is not this " +
+            statement = "July 2025 public dump: the $namespace namespace reads $marker only " +
+                "with READ_DEVICE_CONFIG and its default is $dumpDefault. That dump is not this " +
                 "installed build.",
             strength = DependencyEvidenceStrength.DUMP_ONLY,
-            source = "July 2025 public AICore/PCS dump (Stage 9)",
+            source = "July 2025 public AICore/PCS dump",
         )
         if (code == null) {
             return DependencyStep(
@@ -435,9 +467,9 @@ class ProvisioningDependencyEvaluator {
             InstalledCodePresence.ABSENT -> return DependencyStep(
                 id,
                 DependencyStepOutcome.NOT_OBSERVABLE,
-                "Contradicts the July 2025 dump: every dex of ${facts.packageName} was read and " +
-                    "none contains \"$marker\", so the dump's gate was not found in the installed " +
-                    "code. This is not evidence that the step passes.",
+                "Contradicts the July 2025 public dump: every dex of ${facts.packageName} was " +
+                    "read and none contains \"$marker\", so the dump's gate was not found in the " +
+                    "installed code. This is not evidence that the step passes.",
                 evidence + DependencyEvidence(
                     statement = "\"$marker\" is absent from the complete installed-code read of " +
                         "${facts.packageName}.",
@@ -476,30 +508,52 @@ class ProvisioningDependencyEvaluator {
                 evidence,
             )
         }
-        val defaults = markerFacts.references.flatMap { it.defaults }
-        val distinct = defaults.distinct()
-        val single = distinct.singleOrNull()
-        if (single == null || single == InstalledCodeDefaultValue.Unresolved) {
-            val description = if (distinct.isEmpty()) {
-                "no literal was resolved"
-            } else {
-                distinct.joinToString(", ", transform = ::describeDefault)
-            }
+        val exactNames = exactFlagDefaults(markerFacts)
+        val namesDescription = describeExactFlagDefaults(exactNames)
+        evidence += DependencyEvidence(
+            statement = "Exact flag names and their defaults ($DEFAULTS_LABEL; " +
+                "\"no following argument\" is not a default site): $namesDescription.",
+            strength = DependencyEvidenceStrength.OBSERVED,
+            source = "installed-code reader",
+        )
+        val established = exactNames.mapNotNull { exact ->
+            exact.establishedDefault?.let { exact.name to it }
+        }
+        val blocked = exactNames.filter { it.unresolvedSite || it.mixedSites }
+        if (blocked.isNotEmpty()) {
             return DependencyStep(
                 id,
                 DependencyStepOutcome.NOT_OBSERVABLE,
-                "Consistent with the dump, not shown: the flag default is not established " +
-                    "($description). A step uses a default only when every reference carries the " +
-                    "same single literal.",
-                evidence + DependencyEvidence(
-                    statement = "Defaults ($DEFAULTS_LABEL): $description.",
-                    strength = DependencyEvidenceStrength.OBSERVED,
-                    source = "installed-code reader",
-                ),
+                "Consistent with the dump, not shown: at least one exact flag name has an " +
+                    "unresolved or mixed default site ($namesDescription). A step uses a " +
+                    "default only when every site of an exact name is the same single literal.",
+                evidence,
+            )
+        }
+        if (established.isEmpty()) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "Consistent with the dump, not shown: no exact flag name has a default site " +
+                    "($namesDescription); a flag passed with no following argument carries no " +
+                    "value beside it.",
+                evidence,
+            )
+        }
+        val distinctEstablished = established.map { it.second }.distinct()
+        val single = distinctEstablished.singleOrNull()
+        if (single == null) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "Consistent with the dump, not shown: the established exact names disagree on " +
+                    "their default ($namesDescription).",
+                evidence,
             )
         }
         evidence += DependencyEvidence(
-            statement = "Default ($DEFAULTS_LABEL): ${describeDefault(single)}.",
+            statement = "Every established exact name reads the same default " +
+                "($DEFAULTS_LABEL): ${describeDefault(single)}.",
             strength = DependencyEvidenceStrength.OBSERVED,
             source = "installed-code reader",
         )
@@ -537,7 +591,7 @@ class ProvisioningDependencyEvaluator {
                 id,
                 DependencyStepOutcome.NOT_OBSERVABLE,
                 "Consistent with the dump, not shown: the installed code contains \"$marker\" and " +
-                    "resolves its default, but the READ_DEVICE_CONFIG check was not found beside it.",
+                    "resolves a default, but the READ_DEVICE_CONFIG check was not found beside it.",
                 evidence,
             )
         }
@@ -549,58 +603,86 @@ class ProvisioningDependencyEvaluator {
             strength = DependencyEvidenceStrength.OBSERVED,
             source = "permission matrix",
         )
-        return when (status) {
-            PermissionStatus.GRANTED -> DependencyStep(
-                id,
-                DependencyStepOutcome.NOT_OBSERVABLE,
-                "Consistent with the dump, not shown: READ_DEVICE_CONFIG is granted for " +
-                    "${facts.packageName}, so the installed code reads DeviceConfig; the namespace " +
-                    "value itself is not observable from this app.",
-                evidence,
+        if (status == PermissionStatus.DENIED) {
+            evidence += DependencyEvidence(
+                statement = "That the denied permission makes each of these flags read its " +
+                    "default is inferred: the permission check is found in the package, not on " +
+                    "each flag's read path.",
+                strength = DependencyEvidenceStrength.INFERRED,
+                source = "installed-code reader and permission matrix",
             )
-
-            PermissionStatus.DENIED -> if (disabling) {
+            val names = established.joinToString(", ") { it.first }
+            return if (disabling) {
                 DependencyStep(
                     id,
                     DependencyStepOutcome.FAILED,
-                    "The installed code gates \"$marker\" on DeviceConfig with default " +
-                        "${describeDefault(single)}, the READ_DEVICE_CONFIG check is found beside " +
-                        "it, and the permission is denied, so the flag reads its default (disabled).",
+                    "The installed code gates \"$marker\" on DeviceConfig: every established " +
+                        "exact name ($names) reads the same disabling default " +
+                        "(${describeDefault(single)}), the READ_DEVICE_CONFIG check is found " +
+                        "beside it, and the permission is denied, so each flag reads its default. " +
+                        "That the denial makes the flag read its default is inferred: the check " +
+                        "is found in the package, not on each flag's read path.",
                     evidence,
                 )
             } else {
                 DependencyStep(
                     id,
                     DependencyStepOutcome.PASSED,
-                    "The installed code gates \"$marker\" on DeviceConfig with default " +
-                        "${describeDefault(single)}; with the permission denied the flag reads that " +
-                        "default, which leaves the gate open.",
+                    "The installed code gates \"$marker\" on DeviceConfig: every established " +
+                        "exact name ($names) reads the same enabling default " +
+                        "(${describeDefault(single)}); with the permission denied each flag reads " +
+                        "that default, which leaves the gate open. That the denial makes the flag " +
+                        "read its default is inferred: the check is found in the package, not on " +
+                        "each flag's read path.",
                     evidence,
                 )
             }
-
-            else -> DependencyStep(
-                id,
-                DependencyStepOutcome.NOT_OBSERVABLE,
+        }
+        return DependencyStep(
+            id,
+            DependencyStepOutcome.NOT_OBSERVABLE,
+            if (status == PermissionStatus.GRANTED) {
+                "Consistent with the dump, not shown: READ_DEVICE_CONFIG is granted for " +
+                    "${facts.packageName}, so the installed code reads DeviceConfig; the " +
+                    "namespace value itself is not observable from this app."
+            } else {
                 "Consistent with the dump, not shown: the READ_DEVICE_CONFIG grant state for " +
                     "${facts.packageName} is not established " +
-                    "(${status?.label ?: "matrix not collected"}); unknown is not denied.",
-                evidence,
-            )
-        }
+                    "(${status?.label ?: "matrix not collected"}); unknown is not denied."
+            },
+            evidence,
+        )
     }
 
+    /**
+     * The framework checks component access both ways: PCS's policy must name AICore with a
+     * matching digest, and AICore's own complete manifest must either declare no policy or
+     * name PCS with a digest matching PCS's signer. A failure on the PCS side is possible
+     * from observed facts, but whether this build enforces the policy is not published, so
+     * that failure is inferred.
+     */
     private fun associationStep(
         manifests: List<ManifestEvidenceSnapshot>,
+        packages: List<PackageFacts>,
         aicore: PackageFacts?,
     ): DependencyStep {
         val id = DependencyStepId.PCS_ASSOCIATION
         val dumpEvidence = DependencyEvidence(
-            statement = "GrapheneOS checks component access both ways for every non-system pair; " +
-                "in the July 2025 dump PCS's policy lists AICore and ASI certificate digests.",
+            statement = "GrapheneOS checks component access both ways for every non-system " +
+                "pair; in the July 2025 public dump PCS's policy lists AICore and ASI " +
+                "certificate digests.",
             strength = DependencyEvidenceStrength.DUMP_ONLY,
-            source = "GrapheneOS ActivityManagerService and PCS dump (Stage 9 review)",
+            source = "GrapheneOS ActivityManagerService and July 2025 public PCS dump",
         )
+        if (aicore == null) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "The installed AICore package is not visible to this app, so its package name " +
+                    "and signer are not established and no policy entry can be attributed to it.",
+                listOf(dumpEvidence),
+            )
+        }
         val pcs = manifests.firstOrNull { it.requestedPackage == PlatformPrincipals.PCS }
             ?: return DependencyStep(
                 id,
@@ -669,78 +751,176 @@ class ProvisioningDependencyEvaluator {
                 evidence,
             )
         }
-        val names = pcs.associationPackageNames
-        val policyDigests = pcs.associationCertificateDigests.map(::normalizeDigest).filter { it.isNotEmpty() }
+        val entries = pcs.associationElements.flatMap { element -> element.packages }
+        val names = entries.mapNotNull { it.name }.distinct()
+        val aicoreEntries = entries.filter { it.name == aicore.packageName }
         evidence += DependencyEvidence(
             statement = "Policy packages: ${names.joinToString(", ").ifBlank { "none" }}; " +
-                "certificate digests: ${policyDigests.size} read.",
+                "entries named for ${aicore.packageName}: ${aicoreEntries.size}.",
             strength = DependencyEvidenceStrength.OBSERVED,
             source = "installed-manifest reader",
         )
-        if (aicore == null) {
+        if (aicoreEntries.isEmpty()) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.FAILED,
+                "The installed PCS association policy has no entry named for the installed " +
+                    "AICore package ${aicore.packageName} (it names " +
+                    "${names.joinToString(", ").ifBlank { "no package" }}); if this build " +
+                    "enforces the policy, the association check would refuse AICore.",
+                evidence + DependencyEvidence(
+                    statement = "Observed absence: none of the policy entries is named for " +
+                        "${aicore.packageName}.",
+                    strength = DependencyEvidenceStrength.INFERRED,
+                    source = "installed-manifest reader",
+                ),
+            )
+        }
+        val policyDigests = aicoreEntries
+            .flatMap { it.certificateDigests }
+            .map(::normalizeDigest)
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (policyDigests.isEmpty()) {
             return DependencyStep(
                 id,
                 DependencyStepOutcome.NOT_OBSERVABLE,
-                "The installed AICore package is not visible to this app, so its signer cannot be " +
-                    "compared with the policy.",
+                "The policy entry named for ${aicore.packageName} carries no certificate digest, " +
+                    "so its match with AICore's signer cannot be established.",
                 evidence,
             )
         }
-        val aicoreDigests = if (aicore.signersRead) {
-            aicore.signingSha256.map(::normalizeDigest).filter { it.isNotEmpty() }
-        } else {
-            emptyList()
+        if (!aicore.signersRead || aicore.signingSha256.isEmpty()) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "The installed AICore signer was not read, so it cannot be compared with the " +
+                    "policy entry's digests.",
+                evidence,
+            )
         }
+        val aicoreDigests = aicore.signingSha256.map(::normalizeDigest).filter { it.isNotEmpty() }
         evidence += DependencyEvidence(
             statement = "Installed AICore ${aicore.packageName} signer SHA-256: " +
-                (if (!aicore.signersRead) {
-                    "not read"
-                } else if (aicoreDigests.isEmpty()) {
-                    "none reported"
-                } else {
-                    "${aicoreDigests.size} digest(s) read"
-                }) + ".",
+                "${aicoreDigests.size} digest(s) read; the policy entry named for it carries " +
+                "${policyDigests.size} digest(s).",
             strength = DependencyEvidenceStrength.OBSERVED,
-            source = "package facts",
+            source = "package facts and installed-manifest reader",
         )
-        if (policyDigests.isNotEmpty() && aicoreDigests.isNotEmpty()) {
-            return if (policyDigests.any { it in aicoreDigests }) {
-                DependencyStep(
+        if (!policyDigests.any { it in aicoreDigests }) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.FAILED,
+                "No certificate digest in the policy entry named for ${aicore.packageName} " +
+                    "equals the installed AICore signer's SHA-256; if this build enforces the " +
+                    "policy, the association check would refuse AICore.",
+                evidence + DependencyEvidence(
+                    statement = "Observed mismatch: the entry's digests and AICore's signer " +
+                        "digests are disjoint.",
+                    strength = DependencyEvidenceStrength.INFERRED,
+                    source = "package facts and installed-manifest reader",
+                ),
+            )
+        }
+        evidence += DependencyEvidence(
+            statement = "The policy entry named for ${aicore.packageName} lists a digest equal " +
+                "to the installed AICore signer's SHA-256.",
+            strength = DependencyEvidenceStrength.OBSERVED,
+            source = "package facts and installed-manifest reader",
+        )
+        val aicoreManifest = manifests.firstOrNull { it.requestedPackage == aicore.packageName }
+        if (aicoreManifest == null || !aicoreManifest.complete) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "The PCS entry for AICore matches, but AICore's own manifest was not completely " +
+                    "read; the framework checks component access both ways, so the pass is not " +
+                    "established.",
+                evidence,
+            )
+        }
+        val reverseEntries = aicoreManifest.associationElements.flatMap { element -> element.packages }
+        if (reverseEntries.isNotEmpty()) {
+            val pcsEntries = reverseEntries.filter { it.name == PlatformPrincipals.PCS }
+            if (pcsEntries.isEmpty()) {
+                return DependencyStep(
                     id,
-                    DependencyStepOutcome.PASSED,
-                    "The installed PCS association policy lists a certificate digest equal to the " +
-                        "installed AICore signer's SHA-256.",
-                    evidence,
-                )
-            } else {
-                DependencyStep(
-                    id,
-                    DependencyStepOutcome.FAILED,
-                    "The installed PCS association policy lists certificate digests, none of which " +
-                        "equals the installed AICore signer's SHA-256; the association check would " +
-                        "refuse AICore.",
+                    DependencyStepOutcome.NOT_OBSERVABLE,
+                    "AICore's own complete manifest declares an association policy without an " +
+                        "entry named for PCS; the reverse check is not shown to pass.",
                     evidence,
                 )
             }
-        }
-        return if (names.contains(aicore.packageName)) {
-            DependencyStep(
-                id,
-                DependencyStepOutcome.PASSED,
-                "The installed PCS association policy names the installed AICore package " +
-                    "${aicore.packageName}; signer digests were not compared on this read.",
-                evidence,
+            val reverseDigests = pcsEntries
+                .flatMap { it.certificateDigests }
+                .map(::normalizeDigest)
+                .filter { it.isNotEmpty() }
+                .distinct()
+            if (reverseDigests.isEmpty()) {
+                return DependencyStep(
+                    id,
+                    DependencyStepOutcome.NOT_OBSERVABLE,
+                    "AICore's policy entry named for PCS carries no certificate digest, so the " +
+                        "reverse check is not shown to pass.",
+                    evidence,
+                )
+            }
+            val pcsPackage = packages.firstOrNull { it.packageName == PlatformPrincipals.PCS }
+            val pcsSigners = if (pcsPackage?.signersRead == true) {
+                pcsPackage.signingSha256.map(::normalizeDigest).filter { it.isNotEmpty() }
+            } else {
+                emptyList()
+            }
+            if (pcsSigners.isEmpty()) {
+                return DependencyStep(
+                    id,
+                    DependencyStepOutcome.NOT_OBSERVABLE,
+                    "The installed PCS signer was not read, so AICore's policy entry for PCS " +
+                        "cannot be compared.",
+                    evidence,
+                )
+            }
+            if (reverseDigests.none { it in pcsSigners }) {
+                return DependencyStep(
+                    id,
+                    DependencyStepOutcome.NOT_OBSERVABLE,
+                    "AICore's policy entry for PCS does not list the installed PCS signer's " +
+                        "SHA-256; the reverse check is not shown to pass.",
+                    evidence,
+                )
+            }
+            evidence += DependencyEvidence(
+                statement = "AICore's complete manifest names PCS with a digest equal to the " +
+                    "installed PCS signer's SHA-256.",
+                strength = DependencyEvidenceStrength.OBSERVED,
+                source = "package facts and installed-manifest reader",
             )
         } else {
-            DependencyStep(
-                id,
-                DependencyStepOutcome.FAILED,
-                "The installed PCS association policy names ${names.joinToString(", ").ifBlank { "no package" }}, " +
-                    "not the installed AICore package ${aicore.packageName}; the association check " +
-                    "would refuse AICore.",
-                evidence,
+            evidence += DependencyEvidence(
+                statement = "AICore's complete manifest declares no association policy element.",
+                strength = DependencyEvidenceStrength.OBSERVED,
+                source = "installed-manifest reader",
             )
         }
+        evidence += DependencyEvidence(
+            statement = "Whether this build enforces the association policy is not published, " +
+                "so the pass is conditional on enforcement.",
+            strength = DependencyEvidenceStrength.INFERRED,
+            source = "GrapheneOS source",
+        )
+        return DependencyStep(
+            id,
+            DependencyStepOutcome.PASSED,
+            "The installed PCS policy names ${aicore.packageName} with a digest equal to the " +
+                "installed AICore signer, and AICore's own complete manifest " +
+                (if (reverseEntries.isEmpty()) {
+                    "declares no policy; the reverse check has no entry to fail."
+                } else {
+                    "names PCS with a digest equal to the installed PCS signer."
+                }) +
+                " Whether this build enforces the policy is not published.",
+            evidence,
+        )
     }
 
     private fun installedAicorePackage(packages: List<PackageFacts>): PackageFacts? =
@@ -759,6 +939,43 @@ class ProvisioningDependencyEvaluator {
         } ?: candidates.firstOrNull()
     }
 
+    private fun exactFlagDefaults(
+        markerFacts: InstalledCodeMarkerFacts,
+    ): List<ExactFlagDefaults> =
+        markerFacts.references
+            .groupBy { it.matchedString }
+            .entries
+            .sortedBy { it.key }
+            .map { (name, references) ->
+                val values = references.flatMap { it.defaults }.distinct()
+                ExactFlagDefaults(
+                    name = name,
+                    values = values,
+                    defaultSites = values.filterNot {
+                        it == InstalledCodeDefaultValue.NoFollowingArgument
+                    },
+                )
+            }
+
+    private fun describeExactFlagDefaults(names: List<ExactFlagDefaults>): String {
+        val shown = names.take(MAX_DEFAULT_NAMES_IN_REPORT)
+        val rendered = shown.joinToString("; ") { exact ->
+            val values = if (exact.values.isEmpty()) {
+                "no value recorded"
+            } else {
+                exact.values.joinToString(", ") { describeDefault(it) }
+            }
+            "${exact.name} = $values"
+        }
+        val omitted = names.size - shown.size
+        val count = if (omitted > 0) {
+            "; $omitted more (${names.size} exact names total)"
+        } else {
+            "; ${names.size} exact name(s)"
+        }
+        return rendered + count
+    }
+
     private fun normalizeDigest(value: String): String =
         value.replace(":", "").trim().lowercase()
 
@@ -774,11 +991,33 @@ class ProvisioningDependencyEvaluator {
         /** What `defaults` holds; the literal immediately after the flag name. */
         const val DEFAULTS_LABEL = "literal argument right after the flag name"
 
+        /** At most this many exact names are listed in one step's text; a count follows. */
+        private const val MAX_DEFAULT_NAMES_IN_REPORT = 60
+
         fun describeDefault(value: InstalledCodeDefaultValue): String = when (value) {
             is InstalledCodeDefaultValue.BooleanValue -> "boolean ${value.value}"
             is InstalledCodeDefaultValue.IntValue -> "int ${value.value}"
             is InstalledCodeDefaultValue.StringValue -> "string \"${value.value}\""
             InstalledCodeDefaultValue.Unresolved -> "unresolved"
+            InstalledCodeDefaultValue.NoFollowingArgument -> "no following argument"
         }
     }
+}
+
+/** One exact flag name's recorded defaults, with [NoFollowingArgument] separated out. */
+private data class ExactFlagDefaults(
+    val name: String,
+    val values: List<InstalledCodeDefaultValue>,
+    val defaultSites: List<InstalledCodeDefaultValue>,
+) {
+    val unresolvedSite: Boolean
+        get() = defaultSites.contains(InstalledCodeDefaultValue.Unresolved)
+
+    val mixedSites: Boolean
+        get() = defaultSites.size > 1
+
+    /** The single literal every default site agrees on, or null. */
+    val establishedDefault: InstalledCodeDefaultValue?
+        get() = defaultSites.singleOrNull()
+            ?.takeIf { it != InstalledCodeDefaultValue.Unresolved }
 }

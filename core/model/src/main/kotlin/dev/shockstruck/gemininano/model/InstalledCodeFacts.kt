@@ -112,6 +112,12 @@ sealed interface InstalledCodeDefaultValue {
     data class StringValue(val value: String) : InstalledCodeDefaultValue
 
     data object Unresolved : InstalledCodeDefaultValue
+
+    /**
+     * The flag was passed with no parameter after it. This is a real observation, not a
+     * default site: nothing beside the flag name carries a value.
+     */
+    data object NoFollowingArgument : InstalledCodeDefaultValue
 }
 
 /**

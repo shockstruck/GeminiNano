@@ -370,8 +370,14 @@ internal object SyntheticInsns {
 
     fun moveResult(register: Int): IntArray = intArrayOf(0x0a or (register shl 8))
 
+    fun invokeDirect(registers: IntArray, methodIndex: Int): IntArray =
+        invoke35c(0x70, registers, methodIndex)
+
     fun invokeStatic(registers: IntArray, methodIndex: Int): IntArray =
         invoke35c(0x71, registers, methodIndex)
+
+    fun invokeStaticRange(count: Int, firstRegister: Int, methodIndex: Int): IntArray =
+        intArrayOf(0x77 or (count shl 8), methodIndex, firstRegister)
 
     fun invokeVirtual(registers: IntArray, methodIndex: Int): IntArray =
         invoke35c(0x6e, registers, methodIndex)

@@ -284,7 +284,10 @@ private fun resolveFromInvoke(
     val parameterIndex = parameterStarts.indexOfFirst { start -> start in positions }
     if (parameterIndex < 0) return InstalledCodeDefaultValue.Unresolved
     val nextIndex = parameterIndex + 1
-    if (nextIndex >= methodRef.parameterTypes.size) return InstalledCodeDefaultValue.Unresolved
+    if (nextIndex >= methodRef.parameterTypes.size) {
+        // The flag is the last argument, so nothing beside it carries a value.
+        return InstalledCodeDefaultValue.NoFollowingArgument
+    }
     val word = parameterStarts[nextIndex]
     if (word >= registers.size) return InstalledCodeDefaultValue.Unresolved
     val state = literals[registers[word]] ?: return InstalledCodeDefaultValue.Unresolved

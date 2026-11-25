@@ -185,6 +185,42 @@ class InstalledCodeReportTest {
     }
 
     @Test
+    fun exportsNoFollowingArgumentAsItsOwnValue() {
+        val noArgumentFacts = facts().copy(
+            markers = listOf(
+                InstalledCodeMarkerFacts(
+                    marker = "ProtectedDownload__enabled",
+                    match = InstalledCodeMarkerMatch.EXACT,
+                    kind = InstalledCodeMarkerKind.FLAG,
+                    presence = InstalledCodePresence.PRESENT,
+                    references = listOf(
+                        InstalledCodeMarkerReference(
+                            marker = "ProtectedDownload__enabled",
+                            apk = baseApk,
+                            dexEntry = "classes.dex",
+                            matchedString = "ProtectedDownload__enabled",
+                            methodCount = 1,
+                            defaults = listOf(InstalledCodeDefaultValue.NoFollowingArgument),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val report = build(installedCode = listOf(readEvidence(facts = noArgumentFacts)))
+        val json = JSONObject(report.json)
+
+        assertEquals(
+            "no-following-argument",
+            json.getJSONObject("installedCode").getJSONArray("packages").getJSONObject(0)
+                .getJSONArray("markers").getJSONObject(0)
+                .getJSONArray("references").getJSONObject(0)
+                .getJSONArray("defaults").getJSONObject(0)
+                .getString("type"),
+        )
+        assertTrue(report.text.contains("no following argument"))
+    }
+
+    @Test
     fun exportsEveryNonReadOutcomeWithItsOwnDetail() {
         val tooLarge = InstalledCodePackageEvidence(
             requestedPackage = PlatformPrincipals.AICORE,
@@ -262,7 +298,7 @@ class InstalledCodeReportTest {
                         DependencyEvidence(
                             "the client status check was not traced",
                             DependencyEvidenceStrength.SOURCE_TRACE,
-                            "Stage 9",
+                            "public source trace",
                         ),
                     ),
                 ),
@@ -289,12 +325,24 @@ class InstalledCodeReportTest {
         val json = JSONObject(build(dependencies = evaluation).json)
         val dependencies = json.getJSONObject("provisioningDependencies")
         assertEquals(
-            "First failing dependency: ${DependencyStepId.AICORE_BUILD_ID.label}",
+            "First step shown to fail: ${DependencyStepId.AICORE_BUILD_ID.label}",
             dependencies.getString("result"),
         )
         assertEquals(DependencyStepId.AICORE_BUILD_ID.label, dependencies.getString("firstFailingStep"))
         assertEquals(DependencyStepId.SYSTEM_USER.label, dependencies.getString("earliestUnsettledStep"))
-        assertEquals("the gate reads its default", dependencies.getString("summary"))
+        assertTrue(dependencies.getString("summary").contains("the gate reads its default"))
+        assertTrue(dependencies.getString("summary").contains("Earlier steps not passed:"))
+        val earlier = dependencies.getJSONArray("earlierStepsNotPassed")
+        assertEquals(2, earlier.length())
+        assertEquals(
+            DependencyStepId.CLIENT_STATUS_CHECK.label,
+            earlier.getJSONObject(0).getString("step"),
+        )
+        assertEquals("not tested", earlier.getJSONObject(0).getString("outcome"))
+        assertEquals(
+            DependencyStepId.SYSTEM_USER.label,
+            earlier.getJSONObject(1).getString("step"),
+        )
         val steps = dependencies.getJSONArray("steps")
         assertEquals("not tested", steps.getJSONObject(0).getString("outcome"))
         assertEquals(
@@ -334,6 +382,6 @@ class InstalledCodeReportTest {
         assertEquals(152_997L, entries.getJSONObject(0).getLong("pcsVersionCode"))
         assertTrue(entries.getJSONObject(0).getString("observedAt").isNotEmpty())
         assertTrue(report.text.contains("Stored PCS bind history"))
-        assertTrue(report.text.contains("First failing provisioning dependency"))
+        assertTrue(report.text.contains("First step shown to fail"))
     }
 }

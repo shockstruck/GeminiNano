@@ -28,7 +28,6 @@ import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PlatformPrincipals
 import dev.shockstruck.gemininano.testing.TestFixtures
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -85,10 +84,9 @@ class ProvisioningDependencyEvaluatorTest {
         elapsedMillis = 25L,
     )
 
-    private fun flag(
+    private fun flagWithSites(
         name: String,
-        defaults: List<InstalledCodeDefaultValue>,
-        matchedStrings: List<String> = listOf(name),
+        sitesByMatchedName: Map<String, List<InstalledCodeDefaultValue>>,
         methodCount: Int = 1,
         presence: InstalledCodePresence = InstalledCodePresence.PRESENT,
     ): InstalledCodeMarkerFacts = InstalledCodeMarkerFacts(
@@ -99,7 +97,7 @@ class ProvisioningDependencyEvaluatorTest {
         references = if (presence == InstalledCodePresence.ABSENT) {
             emptyList()
         } else {
-            matchedStrings.map { matched ->
+            sitesByMatchedName.map { (matched, defaults) ->
                 InstalledCodeMarkerReference(
                     marker = name,
                     apk = baseApk,
@@ -112,10 +110,25 @@ class ProvisioningDependencyEvaluatorTest {
         },
     )
 
-    private fun buildId(defaults: List<InstalledCodeDefaultValue>) = flag(
+    private fun flag(
+        name: String,
+        defaults: List<InstalledCodeDefaultValue>,
+        matchedStrings: List<String> = listOf(name),
+        methodCount: Int = 1,
+        presence: InstalledCodePresence = InstalledCodePresence.PRESENT,
+    ): InstalledCodeMarkerFacts = flagWithSites(
+        name = name,
+        sitesByMatchedName = matchedStrings.associateWith { defaults },
+        methodCount = methodCount,
+        presence = presence,
+    )
+
+    private fun buildId(
+        defaults: List<InstalledCodeDefaultValue>,
+        name: String = "AicDataRelease__build_id_aicore",
+    ) = flagWithSites(
         name = ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
-        defaults = defaults,
-        matchedStrings = listOf("AicDataRelease__build_id_aicore"),
+        sitesByMatchedName = mapOf(name to defaults),
     )
 
     private fun protectedDownload(defaults: List<InstalledCodeDefaultValue>) = flag(
@@ -125,38 +138,70 @@ class ProvisioningDependencyEvaluatorTest {
     )
 
     private fun packages(
-        signingSha256: List<String> = listOf("AB:CD:EF"),
-        signersRead: Boolean = true,
+        aicoreSigning: List<String> = listOf("AB:CD:EF"),
+        aicoreSignersRead: Boolean = true,
+        pcsSigning: List<String> = listOf("BB:CC:DD"),
     ) = listOf(
         PackageFacts(
             packageName = PlatformPrincipals.AICORE,
             visibility = PackageVisibility.VISIBLE,
             versionCode = 545_573L,
-            signingSha256 = signingSha256,
-            coverage = PackageReadCoverage(signers = signersRead),
+            signingSha256 = aicoreSigning,
+            coverage = PackageReadCoverage(signers = aicoreSignersRead),
         ),
-        TestFixtures.packageFacts(PlatformPrincipals.PCS),
+        PackageFacts(
+            packageName = PlatformPrincipals.PCS,
+            visibility = PackageVisibility.VISIBLE,
+            versionCode = 152_997L,
+            signingSha256 = pcsSigning,
+        ),
     )
 
-    private fun pcsManifest(
-        policyPackages: List<String> = listOf(PlatformPrincipals.AICORE),
-        element: ManifestElementFacts? = null,
-    ) = listOf(
-        ManifestEvidenceSnapshot(
-            requestedPackage = PlatformPrincipals.PCS,
-            outcome = TestFixtures.manifestRead(
-                packageName = PlatformPrincipals.PCS,
-                pccElements = listOf(
-                    element ?: TestFixtures.associationElement(*policyPackages.toTypedArray()),
-                ),
-            ),
-        ),
+    private fun policyEntry(
+        name: String?,
+        digests: List<String>,
+    ) = ManifestAssociationPackageFacts(name = name, certificateDigests = digests)
+
+    private fun policyElement(
+        vararg entries: ManifestAssociationPackageFacts,
+    ) = ManifestElementFacts(
+        name = "component-access",
+        packages = entries.toList(),
     )
+
+    private fun associationManifests(
+        pcsElements: List<ManifestElementFacts> = listOf(
+            policyElement(policyEntry(PlatformPrincipals.AICORE, listOf("AB:CD:EF"))),
+        ),
+        aicoreElements: List<ManifestElementFacts> = emptyList(),
+        aicoreComplete: Boolean = true,
+        aicorePackage: String = PlatformPrincipals.AICORE,
+    ): List<ManifestEvidenceSnapshot> {
+        val pcsRead = TestFixtures.manifestRead(
+            packageName = PlatformPrincipals.PCS,
+            pccElements = pcsElements,
+        )
+        val aicoreRead = TestFixtures.manifestRead(
+            packageName = aicorePackage,
+            pccElements = aicoreElements,
+        )
+        return listOf(
+            ManifestEvidenceSnapshot(PlatformPrincipals.PCS, pcsRead),
+            ManifestEvidenceSnapshot(
+                aicorePackage,
+                if (aicoreComplete) {
+                    aicoreRead
+                } else {
+                    ManifestReadOutcome.Partial(aicorePackage, aicoreRead.facts)
+                },
+            ),
+        )
+    }
 
     private fun input(
         appUser: AppUserFacts? = AppUserFacts(isSystemUser = true),
         packages: List<PackageFacts> = packages(),
-        manifests: List<ManifestEvidenceSnapshot> = pcsManifest(),
+        manifests: List<ManifestEvidenceSnapshot> = associationManifests(),
         installedCode: List<InstalledCodePackageEvidence> = listOf(
             read(
                 PlatformPrincipals.AICORE,
@@ -185,15 +230,17 @@ class ProvisioningDependencyEvaluatorTest {
     private fun ProvisioningDependencyEvaluation.step(id: DependencyStepId): DependencyStep =
         steps.first { it.id == id }
 
-    // -- System (owner) user, amendment 1 -------------------------------------------
+    // -- System (owner) user ---------------------------------------------------------
 
     @Test
-    fun aNonSystemUserIsTheFirstFailingStep() {
+    fun aSecondaryUserIsACandidateNotAFailedStep() {
         val evaluation = evaluator.evaluate(input(appUser = AppUserFacts(isSystemUser = false)))
 
-        assertEquals(DependencyStepOutcome.FAILED, evaluation.step(DependencyStepId.SYSTEM_USER).outcome)
-        assertEquals(DependencyStepId.SYSTEM_USER, evaluation.firstFailingStep?.id)
-        assertTrue(evaluation.resultLabel.contains("system (owner) user"))
+        val step = evaluation.step(DependencyStepId.SYSTEM_USER)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("candidate cause"))
+        assertTrue(step.summary.contains("owner profile"))
+        assertEquals(DependencyStepId.AICORE_BUILD_ID, evaluation.firstFailingStep?.id)
     }
 
     @Test
@@ -207,7 +254,7 @@ class ProvisioningDependencyEvaluatorTest {
     fun aicoresUserIsNotInferredWhenThePackageIsNotVisible() {
         val evaluation = evaluator.evaluate(
             input(
-                packages = listOf(TestFixtures.packageFacts(PlatformPrincipals.PCS)),
+                packages = listOf(packages().first { it.packageName == PlatformPrincipals.PCS }),
                 manifests = emptyList(),
             ),
         )
@@ -245,11 +292,24 @@ class ProvisioningDependencyEvaluatorTest {
 
         val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
         assertEquals(DependencyStepOutcome.FAILED, step.outcome)
-        assertEquals(DependencyStepId.AICORE_BUILD_ID, evaluation.firstFailingStep?.id)
+        assertEquals(
+            "First step shown to fail: ${DependencyStepId.AICORE_BUILD_ID.label}",
+            evaluation.resultLabel,
+        )
+        assertEquals(
+            listOf(
+                DependencyStepId.CLIENT_STATUS_CHECK to DependencyStepOutcome.NOT_TESTED,
+                DependencyStepId.AICORE_POPULATOR_GATE to DependencyStepOutcome.NOT_OBSERVABLE,
+            ),
+            evaluation.earlierStepsNotPassed.map { it.id to it.outcome },
+        )
+        assertTrue(evaluation.summary.contains("Earlier steps not passed:"))
         assertTrue(
             step.evidence.joinToString(" ") { it.statement }
                 .contains(ProvisioningDependencyEvaluator.DEFAULTS_LABEL),
         )
+        assertTrue(step.evidence.any { it.strength == DependencyEvidenceStrength.INFERRED })
+        assertTrue(step.summary.contains("inferred"))
     }
 
     @Test
@@ -265,10 +325,192 @@ class ProvisioningDependencyEvaluatorTest {
             ),
         )
 
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.PASSED, step.outcome)
+        assertTrue(step.summary.contains("inferred"))
+    }
+
+    @Test
+    fun aNameWithADefaultSiteAndANoArgumentSiteKeepsItsDefault() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            buildId(
+                                listOf(
+                                    InstalledCodeDefaultValue.IntValue(0),
+                                    InstalledCodeDefaultValue.NoFollowingArgument,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
         assertEquals(
-            DependencyStepOutcome.PASSED,
+            DependencyStepOutcome.FAILED,
             evaluation.step(DependencyStepId.AICORE_BUILD_ID).outcome,
         )
+    }
+
+    @Test
+    fun aPrefixPassedToConcatIsNotEstablished() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            buildId(
+                                defaults = listOf(InstalledCodeDefaultValue.Unresolved),
+                                name = ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("unresolved or mixed"))
+    }
+
+    @Test
+    fun twoEstablishedNamesBothZeroFail() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                mapOf(
+                                    "AicDataRelease__build_id_aicore" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                    "AicDataRelease__build_id_asi" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.FAILED, step.outcome)
+        assertTrue(step.summary.contains("AicDataRelease__build_id_aicore"))
+        assertTrue(step.summary.contains("AicDataRelease__build_id_asi"))
+    }
+
+    @Test
+    fun twoEstablishedNamesZeroAndNonZeroIsNotObservable() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                mapOf(
+                                    "AicDataRelease__build_id_aicore" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                    "AicDataRelease__build_id_asi" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(1)),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("disagree"))
+    }
+
+    @Test
+    fun zeroAndUnresolvedIsNotObservable() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                mapOf(
+                                    "AicDataRelease__build_id_aicore" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                    "AicDataRelease__build_id_asi" to
+                                        listOf(InstalledCodeDefaultValue.Unresolved),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("unresolved or mixed"))
+    }
+
+    @Test
+    fun onlyNoArgumentSitesIsNotObservable() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            buildId(listOf(InstalledCodeDefaultValue.NoFollowingArgument)),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("no exact flag name has a default site"))
+    }
+
+    @Test
+    fun theNotEstablishedListIsCappedAtSixtyNamesWithACount() {
+        val sites = (0 until 62).associate { index ->
+            "AicDataRelease__build_id_n%02d".format(index) to
+                listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved)
+        }
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                sites,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("2 more (62 exact names total)"))
+        assertTrue(step.summary.contains("AicDataRelease__build_id_n59"))
+        assertTrue(!step.summary.contains("AicDataRelease__build_id_n61"))
     }
 
     @Test
@@ -292,7 +534,7 @@ class ProvisioningDependencyEvaluatorTest {
 
         val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
         assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
-        assertTrue(step.summary.contains("Contradicts the July 2025 dump"))
+        assertTrue(step.summary.contains("Contradicts the July 2025 public dump"))
         assertTrue(step.evidence.any { it.statement.contains("absent") })
     }
 
@@ -313,53 +555,7 @@ class ProvisioningDependencyEvaluatorTest {
 
         val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
         assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
-        assertTrue(step.summary.contains("default is not established"))
-    }
-
-    @Test
-    fun mixedDefaultsAreNotEstablished() {
-        val evaluation = evaluator.evaluate(
-            input(
-                installedCode = listOf(
-                    read(
-                        PlatformPrincipals.AICORE,
-                        markers = listOf(
-                            flag(
-                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
-                                defaults = listOf(InstalledCodeDefaultValue.IntValue(0)),
-                                matchedStrings = listOf(
-                                    "AicDataRelease__build_id_aicore",
-                                    "AicDataRelease__build_id_gboard",
-                                ),
-                            ).copy(
-                                references = listOf(
-                                    InstalledCodeMarkerReference(
-                                        marker = ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
-                                        apk = baseApk,
-                                        dexEntry = "classes.dex",
-                                        matchedString = "AicDataRelease__build_id_aicore",
-                                        methodCount = 1,
-                                        defaults = listOf(InstalledCodeDefaultValue.IntValue(0)),
-                                    ),
-                                    InstalledCodeMarkerReference(
-                                        marker = ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
-                                        apk = baseApk,
-                                        dexEntry = "classes.dex",
-                                        matchedString = "AicDataRelease__build_id_gboard",
-                                        methodCount = 1,
-                                        defaults = listOf(InstalledCodeDefaultValue.IntValue(1)),
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
-        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
-        assertTrue(step.summary.contains("default is not established"))
+        assertTrue(step.summary.contains("unresolved or mixed"))
     }
 
     @Test
@@ -392,11 +588,19 @@ class ProvisioningDependencyEvaluatorTest {
                     read(
                         PlatformPrincipals.AICORE,
                         markers = listOf(
-                            flag(
-                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
-                                defaults = listOf(InstalledCodeDefaultValue.IntValue(0)),
-                                matchedStrings = listOf("AicDataRelease__build_id_aicore"),
-                                methodCount = 0,
+                            buildId(
+                                listOf(InstalledCodeDefaultValue.IntValue(0)),
+                            ).copy(
+                                references = listOf(
+                                    InstalledCodeMarkerReference(
+                                        marker = ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                        apk = baseApk,
+                                        dexEntry = "classes.dex",
+                                        matchedString = "AicDataRelease__build_id_aicore",
+                                        methodCount = 0,
+                                        defaults = listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -540,15 +744,14 @@ class ProvisioningDependencyEvaluatorTest {
 
         val step = evaluation.step(DependencyStepId.PCS_PROTECTED_DOWNLOAD)
         assertEquals(DependencyStepOutcome.FAILED, step.outcome)
+        assertTrue(step.evidence.any { it.strength == DependencyEvidenceStrength.INFERRED })
     }
 
     // -- Association ----------------------------------------------------------------
 
     @Test
     fun theAssociationPassesOnAMatchingSignerDigest() {
-        val evaluation = evaluator.evaluate(
-            input(packages = packages(signingSha256 = listOf("AB:CD:EF"))),
-        )
+        val evaluation = evaluator.evaluate(input())
 
         assertEquals(
             DependencyStepOutcome.PASSED,
@@ -560,39 +763,42 @@ class ProvisioningDependencyEvaluatorTest {
     fun theAssociationFailsWhenNoPolicyDigestMatches() {
         val evaluation = evaluator.evaluate(
             input(
-                packages = packages(signingSha256 = listOf("AA:BB:CC")),
+                packages = packages(aicoreSigning = listOf("AA:BB:CC")),
                 installedCode = emptyList(),
             ),
         )
 
         val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
         assertEquals(DependencyStepOutcome.FAILED, step.outcome)
+        assertTrue(step.summary.contains("if this build enforces the policy"))
+        assertTrue(step.evidence.any { it.strength == DependencyEvidenceStrength.INFERRED })
         assertEquals(DependencyStepId.PCS_ASSOCIATION, evaluation.firstFailingStep?.id)
     }
 
     @Test
-    fun theAssociationPassesOnThePackageNameWhenDigestsWereNotRead() {
+    fun theAssociationIsNotObservableWhenSignersWereNotRead() {
         val evaluation = evaluator.evaluate(
-            input(packages = packages(signingSha256 = emptyList(), signersRead = false)),
+            input(
+                packages = packages(aicoreSigning = emptyList(), aicoreSignersRead = false),
+            ),
         )
 
         val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
-        assertEquals(DependencyStepOutcome.PASSED, step.outcome)
-        assertTrue(step.summary.contains("signer digests were not compared"))
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("signer was not read"))
     }
 
     @Test
     fun anUnnamedPolicyEntryIsNotObservable() {
-        val element = ManifestElementFacts(
-            name = "component-access",
-            packages = listOf(
-                ManifestAssociationPackageFacts(
-                    name = null,
-                    certificateDigests = listOf("AB:CD:EF"),
+        val evaluation = evaluator.evaluate(
+            input(
+                manifests = associationManifests(
+                    pcsElements = listOf(
+                        policyElement(policyEntry(name = null, digests = listOf("AB:CD:EF"))),
+                    ),
                 ),
             ),
         )
-        val evaluation = evaluator.evaluate(input(manifests = pcsManifest(element = element)))
 
         assertEquals(
             DependencyStepOutcome.NOT_OBSERVABLE,
@@ -600,16 +806,105 @@ class ProvisioningDependencyEvaluatorTest {
         )
     }
 
+    @Test
+    fun aicoresDigestUnderAnotherPackageIsNotAMatch() {
+        val evaluation = evaluator.evaluate(
+            input(
+                manifests = associationManifests(
+                    pcsElements = listOf(
+                        policyElement(
+                            policyEntry(
+                                PlatformPrincipals.AICORE_LEGACY,
+                                listOf("AB:CD:EF"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
+        assertEquals(DependencyStepOutcome.FAILED, step.outcome)
+        assertTrue(step.summary.contains("no entry named"))
+    }
+
+    @Test
+    fun anEntryWithoutDigestIsNotObservable() {
+        val evaluation = evaluator.evaluate(
+            input(
+                manifests = associationManifests(
+                    pcsElements = listOf(
+                        policyElement(policyEntry(PlatformPrincipals.AICORE, emptyList())),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("no certificate digest"))
+    }
+
+    @Test
+    fun theAssociationIsNotObservableWhenAicoresOwnManifestWasNotRead() {
+        val evaluation = evaluator.evaluate(
+            input(manifests = associationManifests(aicoreComplete = false)),
+        )
+
+        val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("AICore's own manifest"))
+    }
+
+    @Test
+    fun theAssociationPassesWhenAicoresOwnPolicyNamesPcsWithAMatchingDigest() {
+        val evaluation = evaluator.evaluate(
+            input(
+                packages = packages(pcsSigning = listOf("AB:CD:EF")),
+                manifests = associationManifests(
+                    aicoreElements = listOf(
+                        policyElement(policyEntry(PlatformPrincipals.PCS, listOf("AB:CD:EF"))),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
+        assertEquals(DependencyStepOutcome.PASSED, step.outcome)
+        assertTrue(step.summary.contains("names PCS"))
+    }
+
+    @Test
+    fun theAssociationIsNotObservableWhenAicoresPolicyPcsEntryDoesNotMatch() {
+        val evaluation = evaluator.evaluate(
+            input(
+                packages = packages(pcsSigning = listOf("AB:CD:EF")),
+                manifests = associationManifests(
+                    aicoreElements = listOf(
+                        policyElement(policyEntry(PlatformPrincipals.PCS, listOf("99:99:99"))),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("reverse check is not shown to pass"))
+    }
+
     // -- Order and unobservable steps ----------------------------------------------
 
     @Test
     fun theFirstFailingStepIsTheEarliestInChainOrder() {
         val evaluation = evaluator.evaluate(
-            input(packages = packages(signingSha256 = listOf("AA:BB:CC"))),
+            input(packages = packages(aicoreSigning = listOf("AA:BB:CC"))),
         )
 
         assertEquals(DependencyStepId.AICORE_BUILD_ID, evaluation.firstFailingStep?.id)
-        assertEquals(DependencyStepOutcome.FAILED, evaluation.step(DependencyStepId.PCS_ASSOCIATION).outcome)
+        assertEquals(
+            DependencyStepOutcome.FAILED,
+            evaluation.step(DependencyStepId.PCS_ASSOCIATION).outcome,
+        )
     }
 
     @Test
@@ -631,16 +926,15 @@ class ProvisioningDependencyEvaluatorTest {
 
     @Test
     fun noFailedStepSaysItCannotBeDetermined() {
-        val evaluation = evaluator.evaluate(
-            DependencyEvaluationInput(),
-        )
+        val evaluation = evaluator.evaluate(DependencyEvaluationInput())
 
         assertNull(evaluation.firstFailingStep)
-        assertTrue(evaluation.resultLabel.startsWith("Cannot be determined"))
+        assertEquals("Cannot be determined: no step is shown to fail", evaluation.resultLabel)
+        assertTrue(evaluation.earlierStepsNotPassed.isEmpty())
         assertEquals(DependencyStepId.SYSTEM_USER, evaluation.firstUnsettledStep?.id)
     }
 
-    // -- Reader failure isolation, amendment 13 ------------------------------------
+    // -- Reader failure isolation --------------------------------------------------
 
     @Test
     fun anUnexpectedThrowableInOnePackageLeavesTheOtherPackageIntact() {
@@ -677,9 +971,7 @@ class ProvisioningDependencyEvaluatorTest {
         assertEquals("read", collected.first { it.requestedPackage == PlatformPrincipals.PCS }.outcomeLabel)
         assertTrue(collected.all { it.elapsedMillis == 7L })
 
-        val evaluation = evaluator.evaluate(
-            input(installedCode = collected),
-        )
+        val evaluation = evaluator.evaluate(input(installedCode = collected))
         assertEquals(
             DependencyStepOutcome.NOT_OBSERVABLE,
             evaluation.step(DependencyStepId.AICORE_BUILD_ID).outcome,
