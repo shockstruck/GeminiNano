@@ -1,18 +1,18 @@
 # Gemini Nano Manager
 
 A rootless diagnostic and management app for Android AICore and the public ML Kit GenAI
-surfaces on GrapheneOS. The Stage 4 iteration is feature-complete against the project's
-definition: it reports what an ordinary sandboxed app can actually observe, probes every
-public ML Kit GenAI capability independently, offers only user-triggered downloads, runs a
-fixed-input inference matrix, keeps the original on-device summarization, and does not
-pretend to provision anything it cannot.
+surfaces on GrapheneOS. Version 0.6.0 reports what an ordinary sandboxed app can actually
+observe, probes every public ML Kit GenAI capability independently, offers only
+user-triggered downloads, runs a fixed-input inference matrix, keeps the original
+on-device summarization, and classifies the provisioning failure it can and cannot
+separate. It does not pretend to provision anything it cannot.
 
 Derived from the public [anandgaur22/GeminiNano](https://github.com/anandgaur22/GeminiNano)
 demo. Internal experimental derivative; not affiliated with Google.
 
 ## Install on the device (no ADB required)
 
-The deliverable is the `offline` debug build, versionName **`0.5.0-offline`** (versionCode 5),
+The deliverable is the `offline` debug build, versionName **`0.6.0-offline`** (versionCode 6),
 applicationId `dev.shockstruck.gemininano`. The `Build offline debug APK` workflow builds it on
 every push and pull request and uploads it as the `gemini-nano-manager-offline-debug` artifact;
 you can also build it locally (see [Build](#build)). Installing it needs only the phone:
@@ -25,7 +25,7 @@ you can also build it locally (see [Build](#build)). Installing it needs only th
    (`Settings → Apps → Special app access → Install unknown apps`); the grant belongs to the
    file manager or browser, not to Gemini Nano Manager.
 3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager** and
-   version `0.5.0-offline`. If your installer does not display the package name or version code,
+   version `0.6.0-offline`. If your installer does not display the package name or version code,
    confirm them after the first launch in **Settings → Version and provenance** (Application ID
    `dev.shockstruck.gemininano`, version name and code) and in **System Components** (version,
    installer and signing certificate SHA-256). If the package name or version differs, you are
@@ -34,12 +34,6 @@ you can also build it locally (see [Build](#build)). Installing it needs only th
    Debug APKs signed with different debug keys cannot upgrade each other, so the installer
    rejects the new one. Uninstalling also clears the app's local settings and stored probe
    result; files you already exported are not affected. Then tap the new APK again.
-
-ADB is an optional convenience only; nothing else in this document requires it:
-
-```bash
-adb install -r app-offline-debug.apk
-```
 
 Emulators cannot exercise the on-device AI path.
 
@@ -86,8 +80,11 @@ updated.
    the binder is alive, the exception class/message, the elapsed time and the unbind-call
    count. The probe does one `bindService(BIND_AUTO_CREATE)` per eligible service with a
    3-second wait and exactly one unbind; it sends no binder transaction, builds no AIDL stub,
-   calls no `asInterface` and uses no transaction code. **Its result is this app's own bind
-   attempt and never proves AICore's access to PCS.**
+   calls no `asInterface` and uses no transaction code. The interface descriptor is read on a
+   worker thread, never the main thread, so a hung remote cannot delay the 3-second timeout;
+   if that read is still pending at the timeout, the binder outcome is kept and the read is
+   recorded as **timed out**. **Its result is this app's own bind attempt and never proves
+   AICore's access to PCS.**
 6. **Private Compute Services → launch controls.** **Open PCS settings** and **Open Network
    usage log** are separate explicit taps, shown only when the installed package reports the
    activity as exported, effectively enabled and permission-free. The item-details activity is
@@ -107,24 +104,61 @@ updated.
    when no result exists); the four Prompt configs on the same basis; the retained summarization
    probe; the PCS surface and launch targets; every planned bind row — `NOT RUN` if it was not
    attempted — with bind flag, outcome, guarded descriptor, binder label, exception, elapsed time
-   and unbind count; the launch results; the offline inference matrix if it has run; package
-   versionCode and signer SHA-256 for AICore, PCS, ASI and GMS; the relevant
-   `getSystemAvailableFeatures` names; the explicitly untested operations; and the diagnostic
-   event log. `BIND_SERVICE` rows carry the holder's first-install and last-update times beside
-   AICore's first-install time. If a bind or launch finishes after the report was generated, the
-   report card says the report predates it and the export buttons stay disabled until you run
-   Full Diagnostics again. The action performs no download and no bind.
+   and unbind count (including `descriptorTimedOut`); the launch results; the installed-manifest
+   facts for AICore, PCS and ASI as the Stage 6 reader decoded them (declared package, signer
+   SHA-256, declared and used permissions, `android:privateComputeCore` components, the
+   component-access/association policy and its package names and certificate digests, and
+   isolated/process attributes); the
+   six-way classifier result with every evidence item's observed/inferred strength, what would
+   refute it and, when INDETERMINATE, the candidates with the missing observation; the offline
+   inference matrix if it has run; package versionCode and signer SHA-256 for AICore, PCS, ASI
+   and GMS; the relevant `getSystemAvailableFeatures` names; the explicitly untested
+   operations; and the diagnostic event log. `BIND_SERVICE` rows carry the holder's
+   first-install and last-update times beside AICore's first-install time. If a bind or launch
+   finishes after the report was generated, the report card says the report predates it and
+   the export buttons stay disabled until you run Full Diagnostics again. The action performs
+   no download and no bind.
 8. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
    convenient); the Diagnostic Logs JSON export if you want the event stream; the AICore and PCS
-   versions from Overview; the permission matrix (already in the JSON export); the per-feature
-   and per-Prompt rows; the bind outcomes; the launch outcomes; and the offline matrix with a
-   note confirming you disabled connectivity yourself.
+   versions from Overview; the permission matrix (already in the JSON export); the
+   classifier's `result`, `summary` and `candidates` fields; the per-feature and per-Prompt
+   rows; the installed-manifest evidence; the bind outcomes; the launch outcomes; and the
+   offline matrix with a note confirming you disabled connectivity yourself.
 9. **Known platform limit.** On GrapheneOS the summarization probe reports
    `Feature 622 is not available` (`3-PREPARATION_ERROR` / `606-FEATURE_NOT_FOUND`): AICore has
    no provisioning entry for feature 622. Feature 622 is the AICore AIDL constant
    `SAPI_SUMMARIZATION_EN_2` (decompiled source, not a model); the model is unknown. No rootless
    app can insert that manifest into AICore — this app reports the state and does not fix it, and
    a Prompt `606` with a different feature id does not change that.
+
+### How to read the failure classification
+
+The **Decision** card's failure-class line is exactly one of: `missing feature configuration`,
+`PCS initialization failure`, `PCS service authorization failure`,
+`remote provisioning rejection`, `model registration failure`, `NPU access restrictions`, or
+`INDETERMINATE`. The report's `provisioningClassifier` object carries the same result with
+every evidence item marked `observed` or `inferred`, the observations that would refute it,
+and for INDETERMINATE the still-open candidates each with its missing observation.
+
+- **INDETERMINATE is the expected answer on this phone.** `606` is documented as
+  configuration-not-downloaded or an unlocked bootloader, and the July 2025 PCS source mirror
+  that refuses `GetManifestConfig` with “feature disabled” was not read on this build. The
+  app cannot send that RPC, so missing feature configuration and PCS service authorization
+  failure stay candidates. The JSON export names both.
+- **`READ_DEVICE_CONFIG` denied supports but does not prove that PCS gate**, and granted does
+  not refute it: an unwritten DeviceConfig namespace leaves the same default.
+- **NPU access restrictions are never selected from a denied `ACCESS_NPU_MODEL_MANAGER_API`,
+  `USE_ON_DEVICE_INTELLIGENCE` or `MANAGE_VIRTUAL_MACHINE` grant.** The class needs a message
+  that names the NPU; none exists in today's evidence.
+- **The classifier uses only the gRPC bind row** (`AstreaGrpcService`/`PcsGrpcService`). A
+  null binding of `GenAiInferenceService` is not evidence, the app's own bind never stands in
+  for AICore's, and an empty or disabled PCS network log is not evidence for any class.
+- **`BIND_SERVICE` denials for GMS and Gboard are not evidence for any class.** Their
+  install times are shown only so the install-order artifact is visible; do not reinstall
+  Play services to change a grant.
+- **Next observation.** For a persistent `606`, update AICore, restart the phone, and probe
+  again. If it persists, the cause is at the manifest/feature gate or a remote response the
+  app cannot send. Re-run **Run Full Diagnostics** and attach the new JSON export.
 
 ## Sections
 
@@ -133,9 +167,9 @@ updated.
 | Overview | Implemented: AICore/PCS presence and version, real summarization probe, most recent failure, decision-tree recommendation, retained summarization test |
 | System Components | Implemented: version, installer, signing SHA-256, SDK levels, requested permissions, observable grants, declared/exported components, metadata, probed intent actions |
 | AICore Features | Implemented: independent Prompt probe over the four `ModelConfig` combinations (`STABLE/FAST`, `STABLE/FULL`, `PREVIEW/FAST`, `PREVIEW/FULL`) plus the full public GenAI matrix — Rewriting, Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech Translation and Text to Speech. Each row is an isolated probe with status, feature id, error class/code/message, base model name or signature only when returned, latency, and a download button only when ML Kit says DOWNLOADABLE. The retained summarization status is shown separately |
-| Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, safe `bindService` outcomes for the six fixed services, and a one-tap `ACTION_APPLICATION_PREFERENCES` check |
+| Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, and safe `bindService` outcomes for the services the installed PCS declares (the current `astrea` names first; the open-source names are aliases). PCS settings and the network usage log have explicit launch controls; the item-details activity is listed but not launched. PCS settings are opened by explicit component resolution, not an `ACTION_APPLICATION_PREFERENCES` intent |
 | Model Manager | Implemented: per-feature observed status, explicit download only when DOWNLOADABLE, progress from the public callbacks, retry after failure, no catalog, no automatic download, no invented cancel |
-| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, decision), the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report |
+| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report |
 | Offline Inference | Implemented: one short fixed-input inference per AVAILABLE feature with exact failures and latency; the user must disable connectivity externally and no offline success is claimed from this app alone |
 | Privacy | Implemented |
 | Diagnostic Logs | Implemented: bounded local event bus, search/filter, copy, JSON and text export through SAF, redaction |
@@ -195,8 +229,8 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   eligible; the two current `astrea` names come first and the open-source names remain
   aliases. The probe performs one `bindService(BIND_AUTO_CREATE)` per eligible service
   with a 3-second wait and exactly one `unbindService`, recording the outcome, the guarded
-  descriptor read and its own timing, binder-alive state, exception, disconnects and
-  elapsed time. It sends no binder transaction, builds no AIDL stub, calls no
+  descriptor read (on a worker thread) and its own timing, binder-alive state, exception,
+  disconnects and elapsed time. It sends no binder transaction, builds no AIDL stub, calls no
   `asInterface` and uses no transaction code. Job-bound services are static facts only.
   Launch controls for PCS settings and the network usage log are explicit taps; the
   item-details activity is not launched because its extras are unknown.
@@ -207,6 +241,13 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   no `RECORD_AUDIO` is requested. Embedding reports the model signature and vector
   dimension the API returned. Agent runs over the public `Agent`/`AgentRunner` API with
   app functions disabled.
+- **Failure classification.** A pure classifier over the observed evidence returns one of the
+  six provisioning failure classes or `INDETERMINATE`. Each result lists the evidence used with
+  its observed/inferred strength and what would refute it; `INDETERMINATE` names the candidates
+  and the missing observation. It never selects NPU access restrictions from a denied
+  permission, never treats a 606 alone as a separated cause, and never uses the app's own PCS
+  bind as a stand-in for AICore's access. The same result is in the UI decision card and in the
+  JSON and text exports.
 - **Model Manager.** Downloads start only from an explicit tap on a row ML Kit reports
   as DOWNLOADABLE. Progress is the SDK callback's byte count; the only "total" shown is
   the one `onDownloadStarted`/`DownloadStarted` reported. A failed download keeps its
@@ -256,8 +297,8 @@ their own network permissions.
 ## On-device limitations
 
 - Gemini Nano requires a supported physical device with Android AICore installed and
-  updated. Only the public ML Kit APIs are used; there is no root, Xposed, Shizuku, ADB,
-  bootloader or verified-boot change and no hidden or system API.
+  updated. Only the public ML Kit APIs are used; there is no privileged access,
+  bootloader or verified-boot change, and no hidden or system API.
 - On GrapheneOS the summarization probe currently returns
   `3-PREPARATION_ERROR / 606-FEATURE_NOT_FOUND: Feature 622 is not available.` The app
   reports this as unprovisioned and explains the platform restriction. It never reports

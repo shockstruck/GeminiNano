@@ -134,6 +134,38 @@ class PcsBindSessionTest {
     }
 
     @Test
+    fun aPendingDescriptorReadAtTheTimeoutKeepsTheBinderOutcome() {
+        val session = session()
+        session.onBindAccepted()
+        session.onBinderArrived(nowMillis = 1_500L)
+        val result = session.onTimeout(nowMillis = 4_000L)!!
+        assertEquals(PcsBindOutcome.BINDER_RETURNED, result.outcome)
+        assertTrue("the read is recorded as timed out", result.descriptorTimedOut)
+        assertEquals(2_500L, result.descriptorReadMillis)
+        assertEquals(3_000L, result.elapsedMillis)
+        assertTrue(session.requiresUnbind())
+    }
+
+    @Test
+    fun aDescriptorReadCompletingAfterTheTimeoutIsIgnored() {
+        val session = session()
+        session.onBindAccepted()
+        session.onBinderArrived(nowMillis = 1_100L)
+        val timedOut = session.onTimeout(nowMillis = 4_000L)!!
+        val late = session.onBinderConnected(
+            interfaceDescriptor = "com.example.IPcs",
+            descriptorReadMillis = 9L,
+            descriptorErrorClass = null,
+            descriptorErrorMessage = null,
+            binderAlive = true,
+            nowMillis = 4_100L,
+        )
+        assertNull(late)
+        assertEquals(PcsBindOutcome.BINDER_RETURNED, timedOut.outcome)
+        assertTrue(timedOut.descriptorTimedOut)
+    }
+
+    @Test
     fun bindingDiedIsReportedAndUnbinds() {
         val session = session()
         session.onBindAccepted()

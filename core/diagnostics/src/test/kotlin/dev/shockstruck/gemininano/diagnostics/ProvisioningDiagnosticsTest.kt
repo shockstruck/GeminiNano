@@ -239,4 +239,44 @@ class ProvisioningDiagnosticsTest {
         assertTrue(lines.any { it.contains("bind probe has not run") })
         assertFalse(lines.any { it.contains("provisioned", ignoreCase = true) })
     }
+    @Test
+    fun theDecisionCarriesTheClassifierResultForTheSameEvidence() {
+        val decision = presenter.present(
+            evidence(
+                binds = listOf(
+                    TestFixtures.bindResult(
+                        componentName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService",
+                        outcome = PcsBindOutcome.NULL_BINDING,
+                    ),
+                ),
+            ),
+        )
+        assertEquals(
+            ProvisioningFailureClass.PCS_INITIALIZATION_FAILURE,
+            decision.classification.result,
+        )
+        assertTrue(decision.classification.evidence.isNotEmpty())
+    }
+
+    @Test
+    fun anIndeterminateDecisionNamesCandidatesAndAMissingObservation() {
+        val decision = presenter.present(
+            evidence(
+                prompt = PromptModelConfig.ALL.map { config ->
+                    TestFixtures.promptStatus(
+                        config = config,
+                        status = FeatureStatusKind.PROBE_ERROR,
+                        errorCode = 606,
+                        message = "Feature 636 is not available.",
+                    )
+                },
+            ),
+        )
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, decision.classification.result)
+        assertTrue(decision.classification.candidates.isNotEmpty())
+        assertTrue(
+            decision.classification.candidates.all { it.missingObservation.isNotBlank() },
+        )
+    }
+
 }

@@ -52,9 +52,12 @@ data class PcsBindResult(
     val requiredPermission: String? = null,
     val bindFlag: String = "BIND_AUTO_CREATE",
     val binderAlive: Boolean? = null,
+    /** The descriptor read's own duration; when [descriptorTimedOut] it is the pending wait. */
     val descriptorReadMillis: Long? = null,
     val descriptorErrorClass: String? = null,
     val descriptorErrorMessage: String? = null,
+    /** True when the binder arrived but its descriptor read was still pending at the timeout. */
+    val descriptorTimedOut: Boolean = false,
 ) {
     /** "null", "alive", "not alive" or "unknown"; never infers a binder from a label. */
     val binderLabel: String
@@ -134,10 +137,13 @@ class PcsBindSession(
     private var completed = false
     private var serviceDisconnected = false
     private var bindingDied = false
+    private var binderPresent = false
+    private var binderArrivalMillis: Long? = null
 
     var unbindCalls: Int = 0
         private set
 
+    @Synchronized
     fun onBindRefused(nowMillis: Long): PcsBindResult? =
         complete(
             PcsBindResult(
@@ -148,10 +154,23 @@ class PcsBindSession(
         )
 
     /** The system accepted the bind; an unbind is now required exactly once. */
+    @Synchronized
     fun onBindAccepted() {
         if (!completed) unbindRequired = true
     }
 
+    /**
+     * A binder arrived but its descriptor read has not completed. The read happens off
+     * the main thread; the timeout may fire while it is still pending.
+     */
+    @Synchronized
+    fun onBinderArrived(nowMillis: Long) {
+        if (completed || binderPresent) return
+        binderPresent = true
+        binderArrivalMillis = nowMillis
+    }
+
+    @Synchronized
     fun onSecurityException(
         exceptionClass: String,
         exceptionMessage: String?,
@@ -169,6 +188,7 @@ class PcsBindSession(
         )
 
     /** Any non-`SecurityException` throwable keeps its own outcome and class. */
+    @Synchronized
     fun onBindException(
         exceptionClass: String,
         exceptionMessage: String?,
@@ -186,10 +206,11 @@ class PcsBindSession(
         )
 
     /**
-     * A real binder arrived. The descriptor read is a separate, guarded step: a failed
-     * read keeps [PcsBindOutcome.BINDER_RETURNED] and records its own class, and an
-     * empty descriptor is kept as the empty string.
+     * A real binder arrived and its descriptor read finished. A failed read keeps
+     * [PcsBindOutcome.BINDER_RETURNED] and records its own class, and an empty descriptor
+     * is kept as the empty string.
      */
+    @Synchronized
     fun onBinderConnected(
         interfaceDescriptor: String?,
         descriptorReadMillis: Long,
@@ -213,6 +234,7 @@ class PcsBindSession(
         )
 
     /** Compatibility helper for a descriptor-only callback; null means no binder. */
+    @Synchronized
     fun onServiceConnected(
         interfaceDescriptor: String?,
         nowMillis: Long,
@@ -226,6 +248,7 @@ class PcsBindSession(
             ),
         )
     } else {
+        onBinderArrived(nowMillis)
         onBinderConnected(
             interfaceDescriptor = interfaceDescriptor,
             descriptorReadMillis = 0L,
@@ -236,6 +259,7 @@ class PcsBindSession(
         )
     }
 
+    @Synchronized
     fun onNullBinding(nowMillis: Long): PcsBindResult? =
         complete(
             PcsBindResult(
@@ -246,8 +270,26 @@ class PcsBindSession(
             ),
         )
 
-    fun onTimeout(nowMillis: Long): PcsBindResult? =
-        complete(
+    /**
+     * The 3-second window elapsed. If a binder arrived and its descriptor read is still
+     * pending, the binder outcome is kept and the read is recorded as timed out; only a
+     * bind with no binder at all is reported as [PcsBindOutcome.TIMEOUT].
+     */
+    @Synchronized
+    fun onTimeout(nowMillis: Long): PcsBindResult? {
+        if (binderPresent) {
+            return complete(
+                PcsBindResult(
+                    componentName = componentName,
+                    outcome = PcsBindOutcome.BINDER_RETURNED,
+                    elapsedMillis = elapsed(nowMillis),
+                    serviceDisconnected = serviceDisconnected,
+                    descriptorTimedOut = true,
+                    descriptorReadMillis = binderArrivalMillis?.let { nowMillis - it },
+                ),
+            )
+        }
+        return complete(
             PcsBindResult(
                 componentName = componentName,
                 outcome = PcsBindOutcome.TIMEOUT,
@@ -255,7 +297,9 @@ class PcsBindSession(
                 serviceDisconnected = serviceDisconnected,
             ),
         )
+    }
 
+    @Synchronized
     fun onBindingDied(nowMillis: Long): PcsBindResult? {
         bindingDied = true
         return complete(
@@ -269,17 +313,21 @@ class PcsBindSession(
         )
     }
 
+    @Synchronized
     fun onServiceDisconnected() {
         serviceDisconnected = true
     }
 
+    @Synchronized
     fun requiresUnbind(): Boolean = unbindRequired && unbindCalls == 0
 
     /** Counted at most once, mirroring the one `unbindService` per accepted bind. */
+    @Synchronized
     fun onUnbindCalled() {
         if (unbindRequired && unbindCalls == 0) unbindCalls++
     }
 
+    @Synchronized
     private fun complete(result: PcsBindResult): PcsBindResult? {
         if (completed) return null
         completed = true

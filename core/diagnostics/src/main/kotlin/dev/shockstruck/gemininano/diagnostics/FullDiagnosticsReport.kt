@@ -39,6 +39,10 @@ data class FullDiagnosticsInput(
     /** `getSystemAvailableFeatures` names relevant to NPU, AI, virtualization or PCC. */
     val systemFeatures: List<String> = emptyList(),
     val systemFeatureReadError: String? = null,
+    /** Installed-manifest evidence from the Stage 6 reader. */
+    val manifests: List<ManifestEvidenceSnapshot> = emptyList(),
+    /** The pure classifier result computed from exactly the evidence in this report. */
+    val classification: ProvisioningClassification? = null,
 )
 
 data class FullDiagnosticsReport(
@@ -106,6 +110,10 @@ class FullDiagnosticsReportBuilder {
         out.append(array(input.bindResults) { bindJson(it) }).append(",\n")
         out.append("  \"pcsLaunches\": ")
         out.append(array(input.launchResults) { launchJson(it) }).append(",\n")
+        out.append("  \"manifests\": ")
+        out.append(array(input.manifests) { manifestJson(it) }).append(",\n")
+        out.append("  \"provisioningClassifier\": ")
+        out.append(classificationJson(input.classification)).append(",\n")
         out.append("  \"untestedOperations\": ")
         out.append(array(untestedOperations(input)) { quote(it) }).append(",\n")
         out.append("  \"offline\": ")
@@ -292,6 +300,7 @@ class FullDiagnosticsReportBuilder {
                     out.append(" | binder=").append(result.binderLabel)
                 }
                 result.descriptorReadMillis?.let { out.append(" | descriptorReadMs=").append(it) }
+                if (result.descriptorTimedOut) out.append(" | descriptorRead=timed out")
                 result.descriptorErrorClass?.let { out.append(" | descriptorErrorClass=").append(it) }
                 result.descriptorErrorMessage?.let { out.append(" | descriptorErrorMessage=").append(it) }
                 result.exceptionClass?.let { out.append(" | class=").append(it) }
@@ -300,6 +309,92 @@ class FullDiagnosticsReportBuilder {
                 out.append(" | elapsed=").append(result.elapsedMillis).append("ms\n")
             }
             out.append("Note: each result belongs to this app's own bind attempt; it does not prove AICore's access to PCS.\n")
+        }
+
+        out.appendLine()
+        out.append("== Provisioning failure classifier ==\n")
+        val classification = input.classification
+        if (classification == null) {
+            out.append("not computed\n")
+        } else {
+            out.append("Result: ").append(classification.result.label).append('\n')
+            out.append("Summary: ").append(classification.summary).append('\n')
+            out.append("Evidence:\n")
+            classification.evidence.forEach { item ->
+                out.append("  ").append(item.label).append('\n')
+            }
+            out.append("What would refute it:\n")
+            classification.refutations.forEach { refutation ->
+                out.append("  - ").append(refutation).append('\n')
+            }
+            if (classification.candidates.isNotEmpty()) {
+                out.append("Candidates and the observation that would separate them:\n")
+                classification.candidates.forEach { candidate ->
+                    out.append("  - ").append(candidate.failureClass.label).append(": ")
+                        .append(candidate.why)
+                        .append(" Missing observation: ").append(candidate.missingObservation)
+                        .append('\n')
+                }
+            }
+            classification.nextObservation?.let {
+                out.append("Next observation: ").append(it).append('\n')
+            }
+        }
+
+        out.appendLine()
+        out.append("== Installed manifest evidence (Stage 6 reader) ==\n")
+        if (input.manifests.isEmpty()) {
+            out.append("not read\n")
+        } else {
+            input.manifests.forEach { snapshot ->
+                out.append(snapshot.requestedPackage).append(": ").append(snapshot.readLabel)
+                    .append(" (").append(snapshot.readDetail).append(')')
+                    .append(" | declaredPackage=").append(snapshot.declaredPackage ?: "unknown")
+                    .append(" | complete=").append(snapshot.complete)
+                    .append(" | signerSha256=")
+                    .append(
+                        if (snapshot.signerSha256.isEmpty()) {
+                            "not read"
+                        } else {
+                            snapshot.signerSha256.joinToString(",")
+                        },
+                    )
+                    .append(" | declaredPermissions=")
+                    .append(snapshot.declaredPermissions.size)
+                    .append(" | usesPermissions=")
+                    .append(snapshot.usesPermissions.size)
+                    .append('\n')
+                snapshot.declaredPermissions.forEach { permission ->
+                    out.append("  permission: ").append(permission.name)
+                        .append(" protection=")
+                        .append(permission.protectionLevelRaw ?: "unknown")
+                        .append('\n')
+                }
+                snapshot.usesPermissions
+                    .map { it.name }
+                    .filter { name -> NAMED_MANIFEST_PERMISSIONS.any { name == it || name.endsWith(".$it") } }
+                    .distinct()
+                    .forEach { name -> out.append("  uses-permission: ").append(name).append('\n') }
+                out.append("  pccComponents: ")
+                    .append(snapshot.pcc.pccComponents.state.name)
+                    .append(" (").append(snapshot.pcc.pccComponents.reason).append(")\n")
+                out.append("  associationPolicy: ")
+                    .append(snapshot.pcc.associationPolicy.state.name)
+                    .append(" (").append(snapshot.pcc.associationPolicy.reason).append(")")
+                if (snapshot.associationPackageNames.isNotEmpty()) {
+                    out.append(" packages=")
+                        .append(snapshot.associationPackageNames.joinToString(","))
+                }
+                if (snapshot.associationCertificateDigests.isNotEmpty()) {
+                    out.append(" digests=")
+                        .append(snapshot.associationCertificateDigests.joinToString(","))
+                }
+                out.append('\n')
+                out.append("  otherSandboxAttributes: ")
+                    .append(snapshot.pcc.otherSandboxAttributes.state.name)
+                    .append(" (").append(snapshot.pcc.otherSandboxAttributes.reason).append(")\n")
+            }
+            out.append("A manifest declaration is not a runtime PCC UID; no signer digest is compared because no public-source digest set is bundled.\n")
         }
 
         out.appendLine()
@@ -603,6 +698,7 @@ class FullDiagnosticsReportBuilder {
         "\"descriptorReadMillis\": " + (result.descriptorReadMillis?.toString() ?: "null") + ", " +
         "\"descriptorErrorClass\": " + quote(result.descriptorErrorClass) + ", " +
         "\"descriptorErrorMessage\": " + quote(result.descriptorErrorMessage) + ", " +
+        "\"descriptorTimedOut\": " + result.descriptorTimedOut + ", " +
         "\"exceptionClass\": " + quote(result.exceptionClass) + ", " +
         "\"exceptionMessage\": " + quote(result.exceptionMessage) + ", " +
         "\"interfaceDescriptor\": " + quote(result.interfaceDescriptor) + ", " +
@@ -728,6 +824,82 @@ class FullDiagnosticsReportBuilder {
         "\"durationMillis\": " + (event.durationMillis?.toString() ?: "null") +
         "}"
 
+    private fun manifestJson(snapshot: ManifestEvidenceSnapshot): String = "{" +
+        "\"requestedPackage\": " + quote(snapshot.requestedPackage) + ", " +
+        "\"read\": " + quote(snapshot.readLabel) + ", " +
+        "\"readDetail\": " + quote(snapshot.readDetail) + ", " +
+        "\"declaredPackage\": " + quote(snapshot.declaredPackage) + ", " +
+        "\"complete\": " + snapshot.complete + ", " +
+        "\"signerSha256\": " + array(snapshot.signerSha256) { quote(it) } + ", " +
+        "\"declaredPermissions\": " + array(snapshot.declaredPermissions) {
+            "{" +
+                "\"name\": " + quote(it.name) + ", " +
+                "\"protectionLevelRaw\": " + quote(it.protectionLevelRaw) + ", " +
+                "\"protectionLevelBase\": " + quote(it.protectionLevelBase) + ", " +
+                "\"protectionLevelFlags\": " + array(it.protectionLevelFlags) { flag -> quote(flag) } +
+                "}"
+        } + ", " +
+        "\"usesPermissions\": " + array(snapshot.usesPermissions) {
+            "{" +
+                "\"name\": " + quote(it.name) + ", " +
+                "\"maxSdkVersion\": " + quote(it.maxSdkVersion) +
+                "}"
+        } + ", " +
+        "\"pccComponents\": " + pccStateJson(
+            snapshot.pcc.pccComponents.state.name,
+            snapshot.pcc.pccComponents.reason,
+            snapshot.pcc.pccComponents.matched.size,
+        ) + ", " +
+        "\"associationPolicy\": {" +
+        "\"state\": " + quote(snapshot.pcc.associationPolicy.state.name) + ", " +
+        "\"reason\": " + quote(snapshot.pcc.associationPolicy.reason) + ", " +
+        "\"packages\": " + array(
+            snapshot.pcc.associationPolicy.matched.flatMap { it.packages },
+        ) {
+            "{" +
+                "\"name\": " + quote(it.name) + ", " +
+                "\"certificateDigests\": " + array(it.certificateDigests) { digest -> quote(digest) } +
+                "}"
+        } +
+        "}, " +
+        "\"otherSandboxAttributes\": " + pccStateJson(
+            snapshot.pcc.otherSandboxAttributes.state.name,
+            snapshot.pcc.otherSandboxAttributes.reason,
+            snapshot.pcc.otherSandboxAttributes.matched.size,
+        ) +
+        "}"
+
+    private fun pccStateJson(state: String, reason: String, matched: Int): String = "{" +
+        "\"state\": " + quote(state) + ", " +
+        "\"reason\": " + quote(reason) + ", " +
+        "\"matchedCount\": " + matched +
+        "}"
+
+    private fun classificationJson(classification: ProvisioningClassification?): String {
+        if (classification == null) return "null"
+        return "{" +
+            "\"result\": " + quote(classification.result.label) + ", " +
+            "\"indeterminate\": " + classification.isIndeterminate + ", " +
+            "\"summary\": " + quote(classification.summary) + ", " +
+            "\"nextObservation\": " + quote(classification.nextObservation) + ", " +
+            "\"evidence\": " + array(classification.evidence) {
+                "{" +
+                    "\"strength\": " + quote(it.strength.label) + ", " +
+                    "\"source\": " + quote(it.source) + ", " +
+                    "\"statement\": " + quote(it.statement) +
+                    "}"
+            } + ", " +
+            "\"refutations\": " + array(classification.refutations) { quote(it) } + ", " +
+            "\"candidates\": " + array(classification.candidates) {
+                "{" +
+                    "\"class\": " + quote(it.failureClass.label) + ", " +
+                    "\"why\": " + quote(it.why) + ", " +
+                    "\"missingObservation\": " + quote(it.missingObservation) +
+                    "}"
+            } +
+            "}"
+    }
+
     private fun <T> array(items: List<T>, render: (T) -> String): String =
         items.joinToString(prefix = "[\n    ", postfix = "\n  ]", separator = ",\n    ") { render(it) }
 
@@ -766,5 +938,15 @@ class FullDiagnosticsReportBuilder {
         /** Packages whose versionCode and signer are exported. */
         private val IDENTITY_PACKAGES =
             AICORE_AND_PCS + setOf(PlatformPrincipals.ASI, PlatformPrincipals.GMS)
+
+        /** Manifest uses-permissions worth printing in the text report. */
+        private val NAMED_MANIFEST_PERMISSIONS = listOf(
+            "PROVIDE_PRIVATE_COMPUTE_SERVICES",
+            "PROVIDE_ON_DEVICE_INTELLIGENCE",
+            "MANAGE_VIRTUAL_MACHINE",
+            "ACCESS_NPU_MODEL_MANAGER_API",
+            "READ_DEVICE_CONFIG",
+            "BIND_SERVICE",
+        )
     }
 }

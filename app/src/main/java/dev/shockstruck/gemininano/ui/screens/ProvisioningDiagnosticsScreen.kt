@@ -236,6 +236,6 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                 onRun = viewModel::runBindProbe,
             )
         }
-        item { ProvisioningDecisionCard(state.decision?.lines) }
+        item { ProvisioningDecisionCard(state.decision) }
     }
 }

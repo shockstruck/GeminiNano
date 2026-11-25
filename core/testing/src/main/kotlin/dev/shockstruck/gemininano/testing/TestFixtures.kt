@@ -9,6 +9,16 @@ import dev.shockstruck.gemininano.model.DownloadResult
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFailure
 import dev.shockstruck.gemininano.model.GrantState
+import dev.shockstruck.gemininano.model.ManifestApkKind
+import dev.shockstruck.gemininano.model.ManifestAssociationPackageFacts
+import dev.shockstruck.gemininano.model.ManifestBooleanValue
+import dev.shockstruck.gemininano.model.ManifestComponentFacts
+import dev.shockstruck.gemininano.model.ManifestElementFacts
+import dev.shockstruck.gemininano.model.ManifestPackageFacts
+import dev.shockstruck.gemininano.model.ManifestReadOutcome
+import dev.shockstruck.gemininano.model.ManifestSourceFacts
+import dev.shockstruck.gemininano.model.ManifestSourceId
+import dev.shockstruck.gemininano.model.ManifestUsesPermissionFacts
 import dev.shockstruck.gemininano.model.Outcome
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
@@ -172,6 +182,8 @@ object TestFixtures {
         aicorePcc: GrantState = GrantState.DENIED,
         aicorePccRequested: Boolean = false,
         aicoreBind: GrantState = GrantState.DENIED,
+        pcsReadDeviceConfig: GrantState? = null,
+        aicoreReadDeviceConfig: GrantState? = null,
         appPackageName: String = PlatformPrincipals.APP,
         appBind: GrantState = GrantState.GRANTED,
         appBindRequested: Boolean = true,
@@ -188,10 +200,12 @@ object TestFixtures {
         val pcsRequested = buildSet {
             if (pcsPccRequested) add(PlatformPermissions.PCC)
             add(PlatformPermissions.AICORE_BIND)
+            if (pcsReadDeviceConfig != null) add(PlatformPermissions.READ_DEVICE_CONFIG)
         }
         val aicoreRequested = buildSet {
             if (aicorePccRequested) add(PlatformPermissions.PCC)
             add(PlatformPermissions.INTERNET)
+            if (aicoreReadDeviceConfig != null) add(PlatformPermissions.READ_DEVICE_CONFIG)
         }
         val appRequested = buildSet {
             if (appBindRequested) add(PlatformPermissions.AICORE_BIND)
@@ -202,10 +216,11 @@ object TestFixtures {
                 PlatformPrincipals.PCS,
                 pcsVisible,
                 pcsRequested,
-                mapOf(
-                    PlatformPermissions.PCC to pcsPcc,
-                    PlatformPermissions.AICORE_BIND to GrantState.GRANTED,
-                ),
+                buildMap {
+                    put(PlatformPermissions.PCC, pcsPcc)
+                    put(PlatformPermissions.AICORE_BIND, GrantState.GRANTED)
+                    pcsReadDeviceConfig?.let { put(PlatformPermissions.READ_DEVICE_CONFIG, it) }
+                },
             ),
             PlatformPrincipals.ASI to matrixFacts(
                 PlatformPrincipals.ASI,
@@ -217,10 +232,13 @@ object TestFixtures {
                 PlatformPrincipals.AICORE,
                 aicoreVisible,
                 aicoreRequested,
-                mapOf(
-                    PlatformPermissions.PCC to aicorePcc,
-                    PlatformPermissions.AICORE_BIND to aicoreBind,
-                ),
+                buildMap {
+                    put(PlatformPermissions.PCC, aicorePcc)
+                    put(PlatformPermissions.AICORE_BIND, aicoreBind)
+                    aicoreReadDeviceConfig?.let {
+                        put(PlatformPermissions.READ_DEVICE_CONFIG, it)
+                    }
+                },
             ),
             PlatformPrincipals.AICORE_LEGACY to matrixFacts(
                 PlatformPrincipals.AICORE_LEGACY,
@@ -266,6 +284,58 @@ object TestFixtures {
         latencyMillis = latencyMillis,
         probedAtEpochMillis = NOW,
     )
+
+    fun manifestRead(
+        packageName: String,
+        declaredPackage: String = packageName,
+        signerSha256: List<String> = listOf("11:22:33"),
+        components: List<ManifestComponentFacts> = emptyList(),
+        pccElements: List<ManifestElementFacts> = emptyList(),
+        usesPermissions: List<ManifestUsesPermissionFacts> = emptyList(),
+    ): ManifestReadOutcome.Read = ManifestReadOutcome.Read(
+        packageName = packageName,
+        facts = ManifestPackageFacts(
+            packageName = packageName,
+            signerCertificateSha256 = signerSha256,
+            sources = listOf(
+                ManifestSourceFacts(
+                    source = ManifestSourceId("base.apk", ManifestApkKind.BASE),
+                    declaredPackage = declaredPackage,
+                    sharedUserId = null,
+                    versionName = "1.0.0",
+                    components = components,
+                    pccElements = pccElements,
+                    usesPermissions = usesPermissions,
+                ),
+            ),
+        ),
+    )
+
+    fun pccComponent(
+        name: String = "com.example.PccService",
+        kind: String = "service",
+    ): ManifestComponentFacts = ManifestComponentFacts(
+        kind = kind,
+        name = name,
+        exported = true,
+        permission = null,
+        process = null,
+        privateComputeCore = ManifestBooleanValue.TRUE,
+    )
+
+    fun usesPermission(name: String): ManifestUsesPermissionFacts =
+        ManifestUsesPermissionFacts(name = name, maxSdkVersion = null)
+
+    fun associationElement(vararg packageNames: String): ManifestElementFacts =
+        ManifestElementFacts(
+            name = "component-access",
+            packages = packageNames.map { packageName ->
+                ManifestAssociationPackageFacts(
+                    name = packageName,
+                    certificateDigests = listOf("AB:CD:EF"),
+                )
+            },
+        )
 
     fun bindResult(
         componentName: String = "com.google.android.apps.miphone.pcs.grpc.PcsGrpcService",

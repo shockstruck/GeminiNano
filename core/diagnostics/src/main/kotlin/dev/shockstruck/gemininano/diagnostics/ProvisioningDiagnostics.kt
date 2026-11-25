@@ -1,34 +1,72 @@
 package dev.shockstruck.gemininano.diagnostics
 
 import dev.shockstruck.gemininano.model.AicoreFeatureLabels
+import dev.shockstruck.gemininano.model.FeatureProbeResult
 import dev.shockstruck.gemininano.model.FeatureStatusKind
+import dev.shockstruck.gemininano.model.OfflineInferenceResult
+import dev.shockstruck.gemininano.model.PackageFacts
+import dev.shockstruck.gemininano.model.PcsBindCatalog
 import dev.shockstruck.gemininano.model.PcsBindOutcome
+import dev.shockstruck.gemininano.model.PcsBindRole
 import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PermissionMatrix
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
 import dev.shockstruck.gemininano.model.PermissionStatus
 import dev.shockstruck.gemininano.model.PromptConfigStatus
 import dev.shockstruck.gemininano.model.PromptModelConfig
+import dev.shockstruck.gemininano.model.SummarizationProbeResult
 
-/** The evidence the Provisioning Diagnostics decision line is allowed to use. */
+/** The evidence the Provisioning Diagnostics decision is allowed to use. */
 data class ProvisioningEvidence(
     val matrix: PermissionMatrix?,
     val prompt: List<PromptConfigStatus>,
     val bindResults: List<PcsBindResult>,
+    val summarization: SummarizationProbeResult? = null,
+    val features: List<FeatureProbeResult> = emptyList(),
+    val offline: List<OfflineInferenceResult> = emptyList(),
+    val packages: List<PackageFacts> = emptyList(),
+    val manifests: List<ManifestEvidenceSnapshot> = emptyList(),
+    val systemFeatures: List<String> = emptyList(),
+    val systemFeatureReadError: String? = null,
 )
 
 data class ProvisioningDecision(
+    val classification: ProvisioningClassification,
     val lines: List<String>,
 )
 
 /**
- * Builds the §14.5 decision lines strictly from observed evidence. It never infers one
- * principal from another, never invents a cause and never says "provisioned" unless a
- * Prompt config reported AVAILABLE and its generation succeeded.
+ * Builds the §14.5 decision lines and the six-way failure classification strictly from
+ * observed evidence. It never infers one principal from another, never invents a cause
+ * and never says "provisioned" unless a Prompt config reported AVAILABLE and its
+ * generation succeeded.
  */
-class ProvisioningDiagnosticsPresenter {
+class ProvisioningDiagnosticsPresenter(
+    private val classifier: ProvisioningFailureClassifier = ProvisioningFailureClassifier(),
+) {
 
     fun present(evidence: ProvisioningEvidence): ProvisioningDecision {
+        val classification = classifier.classify(
+            ClassifierInput(
+                matrix = evidence.matrix,
+                packages = evidence.packages,
+                manifests = evidence.manifests,
+                bindResults = evidence.bindResults,
+                summarization = evidence.summarization,
+                prompt = evidence.prompt,
+                features = evidence.features,
+                offline = evidence.offline,
+                messages = ClassifierMessages.from(
+                    summarization = evidence.summarization,
+                    prompt = evidence.prompt,
+                    features = evidence.features,
+                    offline = evidence.offline,
+                ),
+                systemFeatures = evidence.systemFeatures,
+                systemFeatureReadError = evidence.systemFeatureReadError,
+            ),
+        )
+
         val lines = mutableListOf<String>()
 
         val pcc = evidence.matrix?.let { PermissionMatrixFormatting.pcsPcc(it) }
@@ -38,7 +76,10 @@ class ProvisioningDiagnosticsPresenter {
         lines += bindLine(evidence.bindResults)
         lines += AicoreFeatureLabels.FEATURE_622
 
-        return ProvisioningDecision(lines.filter { it.isNotBlank() })
+        return ProvisioningDecision(
+            classification = classification,
+            lines = lines.filter { it.isNotBlank() },
+        )
     }
 
     private fun pccLine(status: PermissionStatus?): String = when (status) {
@@ -117,9 +158,8 @@ class ProvisioningDiagnosticsPresenter {
 
     private fun bindLine(results: List<PcsBindResult>): String {
         if (results.isEmpty()) return "PCS bind probe has not run yet."
-        val grpc = results.firstOrNull {
-            it.role == "grpc" || it.componentName.endsWith("GrpcService")
-        }
+        val grpc = results.firstOrNull { it.role == "grpc" }
+            ?: results.firstOrNull { it.componentName in GRPC_SERVICE_NAMES }
         return when (grpc?.outcome) {
             PcsBindOutcome.SECURITY_EXCEPTION -> {
                 val message = grpc.exceptionMessage.orEmpty()
@@ -189,5 +229,11 @@ class ProvisioningDiagnosticsPresenter {
     private companion object {
         /** Only these message fragments tie a SecurityException to the OS association policy. */
         val ASSOCIATION_HINTS = listOf("association", "allow-component-access", "component-access")
+
+        /** The production name and the open-source aliases; no other service is the gRPC row. */
+        val GRPC_SERVICE_NAMES: Set<String> = PcsBindCatalog.KNOWN
+            .first { it.role == PcsBindRole.GRPC }
+            .allNames
+            .toSet()
     }
 }
