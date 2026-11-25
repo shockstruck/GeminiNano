@@ -30,11 +30,69 @@ class ProvisioningDiagnosticsTest {
     )
 
     @Test
-    fun pcsPccDenialStatesTheSandboxedInstallGap() {
+    fun pcsPccDenialStatesTheObservedGrantWithoutACause() {
         val lines = presenter.present(evidence(pcc = GrantState.DENIED)).lines
         assertTrue(lines.any { it.contains("requested · denied") })
-        assertTrue(lines.any { it.contains("sandboxed-install gap") })
-        assertTrue(lines.any { it.contains("does not by itself prove AICore cannot bind PCS") })
+        assertTrue(lines.any { it.contains("observed grant state") })
+        assertTrue(lines.any { it.contains("does not say why") })
+        assertTrue(lines.none { it.contains("sandboxed-install gap") })
+        assertTrue(lines.none { it.contains("is not a PCS UID") })
+    }
+
+    @Test
+    fun fourUnavailablePromptConfigsGetTheirOwnLineWithoutModelClaims() {
+        val prompt = PromptModelConfig.ALL.map { config ->
+            TestFixtures.promptStatus(
+                config = config,
+                status = FeatureStatusKind.UNAVAILABLE,
+                featureId = null,
+                errorCode = null,
+                message = null,
+            )
+        }
+        val lines = presenter.present(evidence(prompt = prompt)).lines
+        val unavailable = lines.first { it.contains("all four configs UNAVAILABLE") }
+        assertTrue(unavailable.contains("says nothing about the base model"))
+        assertTrue(unavailable.contains("model registry"))
+        assertTrue(lines.none { it.contains("is AVAILABLE") })
+        assertTrue(lines.none { it.lowercase().contains("provisioned") })
+    }
+
+    @Test
+    fun aSecurityExceptionWithoutAnAssociationMessageDoesNotBlameTheOs() {
+        val lines = presenter.present(
+            evidence(
+                binds = listOf(
+                    TestFixtures.bindResult(
+                        outcome = PcsBindOutcome.SECURITY_EXCEPTION,
+                        exceptionClass = "java.lang.SecurityException",
+                        exceptionMessage = "uid 10234 is not allowed to bind this service",
+                    ),
+                ),
+            ),
+        ).lines
+        val line = lines.first { it.contains("SecurityException") }
+        assertTrue(line.contains("cause is not identified"))
+        assertTrue(!line.contains("next fix is OS-side"))
+    }
+
+    @Test
+    fun aNonSecurityBindThrowableKeepsItsOwnOutcomeAndSaysCauseUnknown() {
+        val lines = presenter.present(
+            evidence(
+                binds = listOf(
+                    TestFixtures.bindResult(
+                        outcome = PcsBindOutcome.BIND_ERROR,
+                        exceptionClass = "java.lang.IllegalStateException",
+                        exceptionMessage = "service unavailable",
+                    ),
+                ),
+            ),
+        ).lines
+        val line = lines.first { it.contains("IllegalStateException") }
+        assertTrue(line.contains("not a SecurityException"))
+        assertTrue(line.contains("cause is not identified"))
+        assertTrue(!line.contains("association"))
     }
 
     @Test

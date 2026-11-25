@@ -1,5 +1,10 @@
 package dev.shockstruck.gemininano.model
 
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
 /**
  * The public ML Kit GenAI capabilities the app probes independently.
  *
@@ -116,6 +121,17 @@ data class FeatureProbeResult(
                 detail = reason,
                 probedAtEpochMillis = probedAtEpochMillis,
             )
+
+        /**
+         * Renders a feature that has no result at all. It carries [FeatureStatusKind.NOT_PROBED]
+         * and no failure, so no surface or export can turn a missing result into an error.
+         */
+        fun notProbed(feature: GenAiFeature): FeatureProbeResult =
+            FeatureProbeResult(
+                feature = feature,
+                status = FeatureStatusKind.NOT_PROBED,
+                detail = FeatureStatusKind.NOT_PROBED_DETAIL,
+            )
     }
 }
 
@@ -154,7 +170,19 @@ object FeatureMatrixFormatting {
         result.status == FeatureStatusKind.PROBE_ERROR ->
             "unknown — the status probe failed"
 
+        result.status == FeatureStatusKind.NOT_PROBED ->
+            "unknown — not probed yet"
+
         else -> "unknown — ML Kit returned no recognised status"
+    }
+
+    private val PROBE_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss 'UTC'"
+
+    /** The probe time shown next to a failure; null when no probe has run. */
+    fun probeTimeLabel(epochMillis: Long?): String? = epochMillis?.let { millis ->
+        val formatter = SimpleDateFormat(PROBE_TIME_PATTERN, Locale.US)
+        formatter.timeZone = TimeZone.getTimeZone("UTC")
+        formatter.format(Date(millis))
     }
 
     fun renderResult(result: FeatureProbeResult): String {

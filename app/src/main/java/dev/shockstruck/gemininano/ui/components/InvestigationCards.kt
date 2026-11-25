@@ -41,8 +41,9 @@ fun PermissionMatrixCard(matrix: PermissionMatrix?, modifier: Modifier = Modifie
         }
         Text(
             text = "requested comes from PackageInfo.requestedPermissions; granted comes from " +
-                "checkPermission. A permission that was never requested is shown as " +
-                "“not requested”, never as “denied”.",
+                "checkPermission and the requestedPermissionsFlags bit; the declaration comes " +
+                "from getPermissionInfo. A disagreement between the two grant sources is shown " +
+                "as such, and an observed grant is never hidden by “not requested”.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -60,7 +61,40 @@ fun PermissionMatrixCard(matrix: PermissionMatrix?, modifier: Modifier = Modifie
                     label = PermissionMatrixFormatting.shortPermissionLabel(permission),
                     value = PermissionMatrixFormatting.renderCell(observation),
                     isUnknown = status == PermissionStatus.UNKNOWN ||
-                        status == PermissionStatus.NOT_VISIBLE,
+                        status == PermissionStatus.NOT_VISIBLE ||
+                        status == PermissionStatus.READ_ERROR,
+                )
+                Text(
+                    text = PermissionMatrixFormatting.verificationLabel(observation),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Requested-but-denied signature or privileged permissions",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        val denied = matrix.requestedButDeniedSignatureOrPrivileged()
+        if (denied.isEmpty()) {
+            Text(
+                text = "None among the matrix columns.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        } else {
+            denied.forEach { observation ->
+                Text(
+                    text = "${observation.packageName} · " +
+                        PermissionMatrixFormatting.shortPermissionLabel(observation.permission) +
+                        " · " + PermissionMatrixFormatting.declarationLabel(observation.declaration),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
                 )
             }
         }

@@ -35,6 +35,8 @@ import dev.shockstruck.gemininano.model.ComponentFacts
 import dev.shockstruck.gemininano.model.ComponentKind
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
+import dev.shockstruck.gemininano.model.PackageVisibility
+import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
 import dev.shockstruck.gemininano.ui.components.Bullet
 import dev.shockstruck.gemininano.ui.components.KeyValueRow
 import dev.shockstruck.gemininano.ui.components.MonoText
@@ -90,6 +92,21 @@ private fun PackageCard(facts: PackageFacts) {
         title = facts.packageName,
         subtitle = facts.packageName,
     ) {
+        if (facts.visibility == PackageVisibility.READ_ERROR) {
+            StatusBadge(
+                text = "READ ERROR",
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "Reading this package failed: " +
+                    (facts.readError?.label ?: "class and message unavailable") +
+                    ". This is a read error, not evidence that the package is absent.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            return@SectionCard
+        }
         if (!facts.visible) {
             StatusBadge(
                 text = "NOT VISIBLE",
@@ -139,13 +156,28 @@ private fun PackageCard(facts: PackageFacts) {
             Spacer(Modifier.height(4.dp))
             HorizontalDivider()
             Spacer(Modifier.height(8.dp))
-            Text("Observable named permission grants", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Permission verification — requested, checkPermission, requestedPermissionsFlags, declaration",
+                fontWeight = FontWeight.SemiBold,
+            )
             facts.permissionGrants.forEach { grant ->
                 MonoText(
-                    text = PackageFactsFormatting.renderPermissionGrant(grant) +
-                        if (grant.requested) "" else " (not requested)",
+                    text = PermissionMatrixFormatting.renderPermissionFact(grant),
                     modifier = Modifier.padding(vertical = 1.dp),
                 )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Requested-but-denied signature or privileged", fontWeight = FontWeight.SemiBold)
+            val denied = facts.requestedButDeniedSignatureOrPrivileged
+            if (denied.isEmpty()) {
+                MonoText("none", modifier = Modifier.padding(vertical = 1.dp))
+            } else {
+                denied.forEach { grant ->
+                    MonoText(
+                        text = PermissionMatrixFormatting.renderPermissionFact(grant),
+                        modifier = Modifier.padding(vertical = 1.dp),
+                    )
+                }
             }
             Spacer(Modifier.height(8.dp))
             Text("Requested permissions (${facts.requestedPermissions.size})", fontWeight = FontWeight.SemiBold)

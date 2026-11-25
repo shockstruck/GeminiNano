@@ -11,6 +11,18 @@ enum class FeatureStatusKind(val label: String) {
 
     /** The published artifact has no usable public surface for this app. */
     NOT_IN_PUBLIC_API("NOT AVAILABLE IN THE PUBLIC API"),
+
+    /**
+     * No probe result exists for this feature yet. This is a state of its own: it is
+     * never an error, never a claim about AICore, and it carries no failure.
+     */
+    NOT_PROBED("NOT PROBED"),
+    ;
+
+    companion object {
+        /** The only detail string an unprobed feature may show. */
+        const val NOT_PROBED_DETAIL = "not probed yet"
+    }
 }
 
 /** A project-owned copy of an ML Kit GenAI failure; no SDK type crosses the module boundary. */

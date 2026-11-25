@@ -4,6 +4,7 @@ import dev.shockstruck.gemininano.model.DiagnosticEvent
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFailure
+import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
 import dev.shockstruck.gemininano.model.Recommendation
 import dev.shockstruck.gemininano.model.RecommendationKind
@@ -23,6 +24,16 @@ class DecisionTree {
                 headline = "Run the summarization probe",
                 detail = "No probe has run yet. Use Re-check to probe Android AICore through the ML Kit summarization API.",
             )
+
+        if (snapshot.aicore.visibility == PackageVisibility.READ_ERROR) {
+            return Recommendation(
+                kind = RecommendationKind.UNKNOWN,
+                headline = "Android AICore could not be read",
+                detail = "Reading the AICore package failed with " +
+                    "${snapshot.aicore.readError?.label ?: "an unrecorded error"}. " +
+                    "This is a read error, not evidence that AICore is absent.",
+            )
+        }
 
         if (!snapshot.aicore.visible) {
             return Recommendation(
@@ -79,6 +90,13 @@ class DecisionTree {
                 headline = "This capability has no usable public API",
                 detail = "The published artifact exposes no public surface this app may call. " +
                     "No status, download or inference is claimed for it.",
+            )
+
+            FeatureStatusKind.NOT_PROBED -> Recommendation(
+                kind = RecommendationKind.UNKNOWN,
+                headline = "The summarization feature has not been probed",
+                detail = "No probe result exists yet. Use Re-check to probe Android AICore " +
+                    "through the ML Kit summarization API.",
             )
 
             FeatureStatusKind.PROBE_ERROR -> error("handled above")

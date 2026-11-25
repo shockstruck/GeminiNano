@@ -12,10 +12,15 @@ class ModelManagerStateTest {
         feature: GenAiFeature,
         status: FeatureStatusKind,
         lastDownload: DownloadResult? = null,
+        failure: GenAiFailure? = null,
+        detail: String? = null,
+        probedAtEpochMillis: Long = 1L,
     ) = FeatureProbeResult(
         feature = feature,
         status = status,
-        probedAtEpochMillis = 1L,
+        failure = failure,
+        detail = detail,
+        probedAtEpochMillis = probedAtEpochMillis,
         lastDownload = lastDownload,
     )
 
@@ -24,10 +29,48 @@ class ModelManagerStateTest {
         val rows = ModelManagerRules.rows(emptyList())
         assertEquals(GenAiFeature.MATRIX, rows.map { it.feature })
         rows.forEach { row ->
-            assertNull(row.status)
+            assertEquals(FeatureStatusKind.NOT_PROBED, row.status)
+            assertEquals(FeatureStatusKind.NOT_PROBED_DETAIL, row.statusDetail)
+            assertNull(row.failure)
+            assertNull(row.probedAtEpochMillis)
             assertFalse(row.downloadOffered)
             assertEquals("unknown — probe this feature first", row.eligibility)
         }
+    }
+
+    @Test
+    fun probeErrorRowKeepsCodeClassMessageAndProbeTime() {
+        val failure = GenAiFailure(
+            errorCode = 606,
+            exceptionClass = "com.google.mlkit.genai.common.GenAiException",
+            message = "Feature 648 is not available.",
+        )
+        val row = ModelManagerRules.rows(
+            listOf(
+                result(
+                    GenAiFeature.AGENT,
+                    FeatureStatusKind.PROBE_ERROR,
+                    failure = failure,
+                    probedAtEpochMillis = 1_800_000_000_000L,
+                ),
+            ),
+        ).first { it.feature == GenAiFeature.AGENT }
+        assertEquals(FeatureStatusKind.PROBE_ERROR, row.status)
+        assertEquals(606, row.failure?.errorCode)
+        assertEquals("com.google.mlkit.genai.common.GenAiException", row.failure?.exceptionClass)
+        assertEquals("Feature 648 is not available.", row.failure?.message)
+        assertEquals("2027-01-15 08:00:00 UTC", row.probeTimeLabel)
+        assertNull(row.statusDetail)
+    }
+
+    @Test
+    fun notProbedDetailIsNeverUsedForAProbedResultWithoutDetail() {
+        val row = ModelManagerRules.rows(
+            listOf(result(GenAiFeature.REWRITING, FeatureStatusKind.UNAVAILABLE)),
+        ).first { it.feature == GenAiFeature.REWRITING }
+        assertEquals(FeatureStatusKind.UNAVAILABLE, row.status)
+        assertNull(row.statusDetail)
+        assertTrue(row.statusDetail != FeatureStatusKind.NOT_PROBED_DETAIL)
     }
 
     @Test

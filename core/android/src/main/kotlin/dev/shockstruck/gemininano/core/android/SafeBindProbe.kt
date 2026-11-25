@@ -106,7 +106,7 @@ class SafeBindProbe(
                 false
             } catch (t: Throwable) {
                 finish(
-                    session.onSecurityException(
+                    session.onBindException(
                         exceptionClass = t.javaClass.name,
                         exceptionMessage = t.message,
                         nowMillis = SystemClock.elapsedRealtime(),

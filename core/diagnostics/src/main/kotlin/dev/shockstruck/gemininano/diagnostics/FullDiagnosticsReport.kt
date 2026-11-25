@@ -1,12 +1,16 @@
 package dev.shockstruck.gemininano.diagnostics
 
 import dev.shockstruck.gemininano.model.DiagnosticEvent
+import dev.shockstruck.gemininano.model.FeatureMatrixFormatting
 import dev.shockstruck.gemininano.model.FeatureProbeResult
+import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFeature
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
+import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
 import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PcsSurface
+import dev.shockstruck.gemininano.model.PermissionGrantFacts
 import dev.shockstruck.gemininano.model.PermissionMatrix
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
 import dev.shockstruck.gemininano.model.PromptConfigStatus
@@ -24,6 +28,8 @@ data class FullDiagnosticsInput(
     val bindResults: List<PcsBindResult>,
     val offline: List<OfflineInferenceResult>,
     val events: List<DiagnosticEvent>,
+    /** Full package facts, so every requested permission can be exported with all sources. */
+    val packages: List<PackageFacts> = emptyList(),
 )
 
 data class FullDiagnosticsReport(
@@ -72,7 +78,9 @@ class FullDiagnosticsReportBuilder {
         out.append("  \"permissionMatrix\": ")
         out.append(permissionMatrixJson(input.matrix)).append(",\n")
         out.append("  \"features\": ")
-        out.append(array(input.features) { featureJson(it) }).append(",\n")
+        out.append(array(featureRows(input.features)) { featureJson(it) }).append(",\n")
+        out.append("  \"permissionVerification\": ")
+        out.append(packagePermissionsJson(input.packages)).append(",\n")
         out.append("  \"prompt\": ")
         out.append(array(input.prompt) { promptJson(it) }).append(",\n")
         out.append("  \"summarization\": ")
@@ -120,35 +128,65 @@ class FullDiagnosticsReportBuilder {
                         .append(PermissionMatrixFormatting.shortPermissionLabel(observation.permission))
                         .append(": ")
                         .append(PermissionMatrixFormatting.renderCell(observation))
+                        .append(" | ")
+                        .append(PermissionMatrixFormatting.verificationLabel(observation))
                         .append('\n')
                 }
             }
+            val denied = matrix.requestedButDeniedSignatureOrPrivileged()
+            out.append("Requested-but-denied signature or privileged cells: ")
+                .append(if (denied.isEmpty()) "none" else denied.joinToString(", ") {
+                    "${it.packageName}/${PermissionMatrixFormatting.shortPermissionLabel(it.permission)}"
+                })
+                .append('\n')
         }
 
         out.appendLine()
         out.append("== GenAI features ==\n")
-        if (input.features.isEmpty()) {
-            out.append("not probed\n")
+        GenAiFeature.MATRIX.forEach { feature ->
+            val result = featureRows(input.features).first { it.feature == feature }
+            out.append(feature.displayName).append(": ").append(result.status.label)
+            result.detail?.let { out.append(" | ").append(it) }
+            result.failure?.let {
+                out.append(" | error=").append(it.codeLabel)
+                    .append(" class=").append(it.exceptionClass)
+                    .append(" message=").append(it.message)
+            }
+            result.featureId?.let { out.append(" | featureId=").append(it) }
+            result.baseModelName?.let { out.append(" | baseModel=").append(it) }
+            result.modelSignature?.let { out.append(" | signature=").append(it) }
+            result.metadataDimension?.let { out.append(" | dimension=").append(it) }
+            result.tokenLimit?.let { out.append(" | tokenLimit=").append(it) }
+            if (result.status != FeatureStatusKind.NOT_PROBED) {
+                out.append(" | latency=").append(result.latencyMillis).append("ms")
+                FeatureMatrixFormatting.probeTimeLabel(result.probedAtEpochMillis)?.let {
+                    out.append(" | probedAt=").append(it)
+                }
+            }
+            out.append('\n')
+        }
+
+        out.appendLine()
+        out.append("== Permission verification (requested · checkPermission · requestedPermissionsFlags · declaration) ==\n")
+        if (input.packages.isEmpty()) {
+            out.append("package facts not collected\n")
         } else {
-            GenAiFeature.MATRIX.forEach { feature ->
-                val result = input.features.firstOrNull { it.feature == feature }
-                out.append(feature.displayName).append(": ")
-                if (result == null) {
-                    out.append("not probed\n")
-                } else {
-                    out.append(result.status.label)
-                    result.detail?.let { out.append(" | ").append(it) }
-                    result.failure?.let {
-                        out.append(" | error=").append(it.codeLabel)
-                            .append(" class=").append(it.exceptionClass)
-                            .append(" message=").append(it.message)
-                    }
-                    result.featureId?.let { out.append(" | featureId=").append(it) }
-                    result.baseModelName?.let { out.append(" | baseModel=").append(it) }
-                    result.modelSignature?.let { out.append(" | signature=").append(it) }
-                    result.metadataDimension?.let { out.append(" | dimension=").append(it) }
-                    result.tokenLimit?.let { out.append(" | tokenLimit=").append(it) }
-                    out.append(" | latency=").append(result.latencyMillis).append("ms\n")
+            input.packages.forEach { packageFacts ->
+                out.append(packageFacts.packageName).append(": ")
+                    .append(PackageFactsFormatting.visibilityLabel(packageFacts))
+                    .append('\n')
+                packageFacts.permissionGrants.forEach { fact ->
+                    out.append("  ")
+                        .append(PermissionMatrixFormatting.renderPermissionFact(fact))
+                        .append('\n')
+                }
+                val denied = packageFacts.requestedButDeniedSignatureOrPrivileged
+                if (denied.isNotEmpty()) {
+                    out.append("  requested-but-denied signature/privileged: ")
+                        .append(denied.joinToString(", ") {
+                            PermissionMatrixFormatting.shortPermissionLabel(it.permission)
+                        })
+                        .append('\n')
                 }
             }
         }
@@ -246,6 +284,12 @@ class FullDiagnosticsReportBuilder {
         return out.toString()
     }
 
+    /** Every matrix feature, with a NOT_PROBED row where no result exists. */
+    private fun featureRows(features: List<FeatureProbeResult>): List<FeatureProbeResult> {
+        val byFeature = features.associateBy { it.feature }
+        return GenAiFeature.MATRIX.map { byFeature[it] ?: FeatureProbeResult.notProbed(it) }
+    }
+
     private fun permissionMatrixJson(matrix: PermissionMatrix?): String {
         if (matrix == null) return "null"
         val out = StringBuilder()
@@ -263,13 +307,60 @@ class FullDiagnosticsReportBuilder {
                     "\"principal\": " + quote(observation.packageName) + ", " +
                     "\"permission\": " + quote(observation.permission) + ", " +
                     "\"requested\": " + observation.requested + ", " +
-                    "\"grant\": " + quote(observation.grant.label) + ", " +
+                    "\"checkPermission\": " + quote(observation.grant.label) + ", " +
+                    "\"requestedPermissionsFlagsGrant\": " +
+                    (observation.requestedFlagsGrant?.toString() ?: "null") + ", " +
+                    "\"grantSourcesDisagree\": " + observation.grantSourcesDisagree + ", " +
+                    "\"declaration\": " + declarationJson(observation.declaration) + ", " +
                     "\"status\": " + quote(observation.status.label) +
                     "}"
             },
         ).append('\n')
         out.append("  }")
         return out.toString()
+    }
+
+    private fun packagePermissionsJson(packages: List<PackageFacts>): String {
+        if (packages.isEmpty()) return "[]"
+        return array(packages) { packageFacts ->
+            "{" +
+                "\"packageName\": " + quote(packageFacts.packageName) + ", " +
+                "\"visibility\": " + quote(packageFacts.visibility.name) + ", " +
+                "\"readError\": " + (packageFacts.readError?.let {
+                    "{\"exceptionClass\": " + quote(it.exceptionClass) + ", " +
+                        "\"message\": " + quote(it.message) + ", " +
+                        "\"attempts\": " + it.attempts + "}"
+                } ?: "null") + ", " +
+                "\"requestedPermissions\": " +
+                array(packageFacts.requestedPermissions) { quote(it) } + ", " +
+                "\"permissions\": " + array(packageFacts.permissionGrants) { permissionFactJson(it) } + ", " +
+                "\"requestedButDeniedSignatureOrPrivileged\": " +
+                array(packageFacts.requestedButDeniedSignatureOrPrivileged) { quote(it.permission) } +
+                "}"
+        }
+    }
+
+    private fun permissionFactJson(fact: PermissionGrantFacts): String = "{" +
+        "\"permission\": " + quote(fact.permission) + ", " +
+        "\"requested\": " + fact.requested + ", " +
+        "\"checkPermission\": " + quote(fact.state.label) + ", " +
+        "\"requestedPermissionsFlagsGrant\": " +
+        (fact.requestedFlagsGrant?.toString() ?: "null") + ", " +
+        "\"grantSourcesDisagree\": " + fact.grantSourcesDisagree + ", " +
+        "\"declaration\": " + declarationJson(fact.declaration) +
+        "}"
+
+    private fun declarationJson(declaration: dev.shockstruck.gemininano.model.PermissionDeclaration?): String {
+        if (declaration == null) return "null"
+        return "{" +
+            "\"defined\": " + declaration.defined + ", " +
+            "\"declaringPackage\": " + quote(declaration.declaringPackage) + ", " +
+            "\"protectionBase\": " + (declaration.protectionBase?.toString() ?: "null") + ", " +
+            "\"protectionFlags\": " + declaration.protectionFlags + ", " +
+            "\"protection\": " + quote(declaration.protectionLabel) + ", " +
+            "\"lookupErrorClass\": " + quote(declaration.lookupErrorClass) + ", " +
+            "\"lookupErrorMessage\": " + quote(declaration.lookupErrorMessage) +
+            "}"
     }
 
     private fun featureJson(result: FeatureProbeResult): String = "{" +
@@ -286,6 +377,7 @@ class FullDiagnosticsReportBuilder {
         "\"metadataDimension\": " + (result.metadataDimension?.toString() ?: "null") + ", " +
         "\"tokenLimit\": " + (result.tokenLimit?.toString() ?: "null") + ", " +
         "\"latencyMillis\": " + result.latencyMillis + ", " +
+        "\"probedAtEpochMillis\": " + result.probedAtEpochMillis + ", " +
         "\"detail\": " + quote(result.detail) +
         "}"
 
@@ -298,7 +390,8 @@ class FullDiagnosticsReportBuilder {
         "\"message\": " + quote(status.message) + ", " +
         "\"baseModelName\": " + quote(status.baseModelName) + ", " +
         "\"generationSucceeded\": " + status.generationSucceeded + ", " +
-        "\"latencyMillis\": " + status.latencyMillis +
+        "\"latencyMillis\": " + status.latencyMillis + ", " +
+        "\"probedAtEpochMillis\": " + status.probedAtEpochMillis +
         "}"
 
     private fun summarizationJson(probe: SummarizationProbeResult?): String {
@@ -309,7 +402,8 @@ class FullDiagnosticsReportBuilder {
             "\"baseModelName\": " + quote(probe.baseModelName) + ", " +
             "\"errorCode\": " + (probe.failure?.errorCode?.toString() ?: "null") + ", " +
             "\"exceptionClass\": " + quote(probe.failure?.exceptionClass) + ", " +
-            "\"message\": " + quote(probe.failure?.message) +
+            "\"message\": " + quote(probe.failure?.message) + ", " +
+            "\"probedAtEpochMillis\": " + probe.probedAtEpochMillis +
             "}"
     }
 
@@ -323,6 +417,7 @@ class FullDiagnosticsReportBuilder {
                     "\"className\": " + quote(it.className) + ", " +
                     "\"exported\": " + it.exported + ", " +
                     "\"enabled\": " + it.enabled + ", " +
+                    "\"effectivelyEnabled\": " + it.effectivelyEnabled + ", " +
                     "\"permission\": " + quote(it.requiredPermission) +
                     "}"
             } + ", " +

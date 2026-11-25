@@ -37,34 +37,59 @@ data class PermissionPrincipal(
 )
 
 /**
- * One matrix cell. Requested and granted are separate facts: `checkPermission` returns
- * DENIED both for "requested but not granted" and for "never requested", so the two
- * must never be collapsed into a single denied state.
+ * One matrix cell. Requested, the `requestedPermissionsFlags` bit, `checkPermission`
+ * and the OS declaration are separate facts:
+ *
+ * - `checkPermission` returns DENIED both for "requested but not granted" and for
+ *   "never requested", so the two are never collapsed.
+ * - The two grant sources are compared, and a disagreement is its own status.
+ * - A grant is never hidden by "not requested": an observed grant always shows.
  */
 data class PermissionObservation(
     val principalLabel: String,
     val packageName: String,
     val permission: String,
-    val packageVisible: Boolean,
+    val packageVisibility: PackageVisibility,
     val requested: Boolean,
     val grant: GrantState,
+    val requestedFlagsGrant: Boolean? = null,
+    val declaration: PermissionDeclaration? = null,
 ) {
+    val packageVisible: Boolean get() = packageVisibility == PackageVisibility.VISIBLE
+
+    val anyGrantObserved: Boolean
+        get() = grant == GrantState.GRANTED || requestedFlagsGrant == true
+
+    val grantSourcesDisagree: Boolean
+        get() = requestedFlagsGrant != null &&
+            grant != GrantState.UNKNOWN &&
+            (grant == GrantState.GRANTED) != requestedFlagsGrant
+
+    val isSignatureOrPrivileged: Boolean
+        get() = declaration?.isSignatureOrPrivileged == true
+
     val status: PermissionStatus
         get() = when {
-            !packageVisible -> PermissionStatus.NOT_VISIBLE
-            !requested -> PermissionStatus.NOT_REQUESTED
-            grant == GrantState.GRANTED -> PermissionStatus.GRANTED
-            grant == GrantState.DENIED -> PermissionStatus.DENIED
-            else -> PermissionStatus.UNKNOWN
+            packageVisibility == PackageVisibility.NOT_VISIBLE -> PermissionStatus.NOT_VISIBLE
+            packageVisibility == PackageVisibility.READ_ERROR -> PermissionStatus.READ_ERROR
+            !requested && anyGrantObserved -> PermissionStatus.GRANTED_NOT_REQUESTED
+            requested && grantSourcesDisagree -> PermissionStatus.GRANT_DISAGREEMENT
+            requested && anyGrantObserved -> PermissionStatus.GRANTED
+            requested && grant == GrantState.DENIED -> PermissionStatus.DENIED
+            requested && grant == GrantState.UNKNOWN -> PermissionStatus.UNKNOWN
+            else -> PermissionStatus.NOT_REQUESTED
         }
 }
 
 enum class PermissionStatus(val label: String) {
     GRANTED("requested · granted"),
     DENIED("requested · denied"),
+    GRANT_DISAGREEMENT("requested · grant sources disagree"),
+    GRANTED_NOT_REQUESTED("grant observed · not requested"),
     NOT_REQUESTED("not requested"),
     UNKNOWN("requested · unknown"),
     NOT_VISIBLE("unknown (package not visible)"),
+    READ_ERROR("unknown (package read error)"),
 }
 
 data class PermissionMatrix(
@@ -79,6 +104,12 @@ data class PermissionMatrix(
 
     fun observationsFor(packageName: String): List<PermissionObservation> =
         observations.filter { it.packageName == packageName }
+
+    /** Requested-but-denied signature or privileged cells of this matrix. */
+    fun requestedButDeniedSignatureOrPrivileged(): List<PermissionObservation> =
+        observations.filter {
+            it.requested && it.status == PermissionStatus.DENIED && it.isSignatureOrPrivileged
+        }
 }
 
 /**
@@ -94,19 +125,20 @@ object PermissionMatrixBuilder {
     ): PermissionMatrix {
         val observations = principals.flatMap { principal ->
             val facts = factsByPackage[principal.packageName]
-            val visible = facts?.visible == true
+            val visibility = facts?.visibility ?: PackageVisibility.NOT_VISIBLE
+            val visible = visibility == PackageVisibility.VISIBLE
             val requestedPermissions = facts?.requestedPermissions.orEmpty()
             permissions.map { permission ->
+                val fact = facts?.permissionGrants?.firstOrNull { it.permission == permission }
                 PermissionObservation(
                     principalLabel = principal.label,
                     packageName = principal.packageName,
                     permission = permission,
-                    packageVisible = visible,
+                    packageVisibility = visibility,
                     requested = visible && requestedPermissions.contains(permission),
-                    grant = facts?.permissionGrants
-                        ?.firstOrNull { it.permission == permission }
-                        ?.state
-                        ?: GrantState.UNKNOWN,
+                    grant = fact?.state ?: GrantState.UNKNOWN,
+                    requestedFlagsGrant = fact?.requestedFlagsGrant,
+                    declaration = fact?.declaration,
                 )
             }
         }
@@ -121,8 +153,46 @@ object PermissionMatrixBuilder {
 /** Rendering helpers kept in `:core:model` so the exact UI strings are unit-tested. */
 object PermissionMatrixFormatting {
 
-    fun renderCell(observation: PermissionObservation?): String =
-        observation?.status?.label ?: "unknown"
+    fun requestedFlagsLabel(value: Boolean?): String = when (value) {
+        true -> "granted"
+        false -> "not granted"
+        null -> "not reported"
+    }
+
+    fun declarationLabel(declaration: PermissionDeclaration?): String = when {
+        declaration == null -> "declaration not read"
+        declaration.lookupErrorClass != null ->
+            "declaration read error: ${declaration.lookupErrorClass}: " +
+                (declaration.lookupErrorMessage ?: "no detail")
+
+        !declaration.defined -> "not defined on this OS"
+        else -> "declared by ${declaration.declaringPackage ?: "unknown"} · " +
+            "protection=${declaration.protectionLabel ?: "unknown"}"
+    }
+
+    fun renderCell(observation: PermissionObservation?): String {
+        val status = observation?.status ?: return "unknown"
+        if (status != PermissionStatus.GRANT_DISAGREEMENT) return status.label
+        return "${status.label} " +
+            "(checkPermission=${observation.grant.label}, " +
+            "requestedPermissionsFlags=${requestedFlagsLabel(observation.requestedFlagsGrant)})"
+    }
+
+    /** The two grant sources and the OS declaration, for one matrix cell. */
+    fun verificationLabel(observation: PermissionObservation?): String {
+        if (observation == null) return "requestedPermissionsFlags=not reported · declaration not read"
+        return "requestedPermissionsFlags=${requestedFlagsLabel(observation.requestedFlagsGrant)} · " +
+            declarationLabel(observation.declaration)
+    }
+
+    /** One requested-permission fact exactly as the System Components screen shows it. */
+    fun renderPermissionFact(fact: PermissionGrantFacts): String {
+        val request = if (fact.requested) "requested" else "not requested"
+        return "${fact.permission}: $request · " +
+            "checkPermission=${fact.state.label} · " +
+            "requestedPermissionsFlags=${requestedFlagsLabel(fact.requestedFlagsGrant)} · " +
+            declarationLabel(fact.declaration)
+    }
 
     fun shortPermissionLabel(permission: String): String = when (permission) {
         PlatformPermissions.PCC -> "PROVIDE_PRIVATE_COMPUTE_SERVICES"

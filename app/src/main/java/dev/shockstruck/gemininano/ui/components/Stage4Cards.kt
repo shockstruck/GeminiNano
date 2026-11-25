@@ -90,7 +90,12 @@ fun FeatureMatrixCard(
             }
             if (result == null) {
                 Spacer(Modifier.height(4.dp))
-                Text("not probed yet", style = MaterialTheme.typography.bodyMedium)
+                StatusBadge(
+                    text = FeatureStatusKind.NOT_PROBED.label,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                KeyValueRow("Detail", FeatureStatusKind.NOT_PROBED_DETAIL)
                 return@forEach
             }
             Spacer(Modifier.height(4.dp))
@@ -194,10 +199,22 @@ fun ModelManagerCard(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
-            KeyValueRow("Status", row.status?.label ?: "not probed")
+            KeyValueRow(
+                label = "Status",
+                value = row.status.label,
+                isUnknown = row.status == FeatureStatusKind.NOT_PROBED,
+            )
             KeyValueRow("Eligibility", row.eligibility)
-            row.statusDetail.takeIf { it.isNotBlank() }?.let {
+            row.statusDetail?.takeIf { it.isNotBlank() }?.let {
                 KeyValueRow("Detail", it)
+            }
+            if (row.status == FeatureStatusKind.PROBE_ERROR) {
+                row.failure?.let { failure ->
+                    KeyValueRow("Error code", failure.codeLabel, monospace = true)
+                    KeyValueRow("Exception", failure.exceptionClass, monospace = true)
+                    KeyValueRow("Message", failure.message, monospace = true)
+                }
+                row.probeTimeLabel?.let { KeyValueRow("Probe time", it) }
             }
             row.progress?.let { progress -> DownloadProgressRows(progress) }
             row.lastDownload?.let { download ->
