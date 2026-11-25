@@ -4,7 +4,12 @@ import android.content.Context
 import android.os.Build
 import dev.shockstruck.gemininano.core.android.AndroidPackageInspector
 import dev.shockstruck.gemininano.core.android.PackageCatalog
+import dev.shockstruck.gemininano.core.android.PcsSurfaceInspector
+import dev.shockstruck.gemininano.core.android.PermissionMatrixProbe
+import dev.shockstruck.gemininano.core.android.SafeBindProbe
+import dev.shockstruck.gemininano.core.genai.MlKitPromptProbe
 import dev.shockstruck.gemininano.core.genai.MlKitSummarizationProbe
+import dev.shockstruck.gemininano.core.genai.UnavailablePromptProbe
 import dev.shockstruck.gemininano.core.genai.UnavailableSummarizationProbe
 import dev.shockstruck.gemininano.data.LogExportManager
 import dev.shockstruck.gemininano.data.ProbeCache
@@ -13,11 +18,13 @@ import dev.shockstruck.gemininano.diagnostics.DecisionTree
 import dev.shockstruck.gemininano.diagnostics.DiagnosticBus
 import dev.shockstruck.gemininano.diagnostics.ExportMetadata
 import dev.shockstruck.gemininano.diagnostics.OverviewPresenter
+import dev.shockstruck.gemininano.diagnostics.ProvisioningDiagnosticsPresenter
 import dev.shockstruck.gemininano.model.BuildFacts
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
 import dev.shockstruck.gemininano.model.PackageVisibility
+import dev.shockstruck.gemininano.model.PromptProbe
 import dev.shockstruck.gemininano.model.SummarizationProbe
 import dev.shockstruck.gemininano.model.SummarizationProbeResult
 
@@ -37,6 +44,15 @@ class AppGraph(context: Context) {
 
     val packageFactsProvider: PackageFactsProvider = AndroidPackageInspector(appContext)
 
+    val permissionMatrixProbe = PermissionMatrixProbe(
+        provider = packageFactsProvider,
+        appPackageName = BuildConfig.APPLICATION_ID,
+    )
+
+    val pcsSurfaceInspector = PcsSurfaceInspector(appContext)
+
+    val safeBindProbe = SafeBindProbe(appContext)
+
     val summarizationProbe: SummarizationProbe =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             MlKitSummarizationProbe(appContext)
@@ -44,9 +60,18 @@ class AppGraph(context: Context) {
             UnavailableSummarizationProbe()
         }
 
+    val promptProbe: PromptProbe =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            MlKitPromptProbe()
+        } else {
+            UnavailablePromptProbe()
+        }
+
     val probeCache = ProbeCache()
 
     private val overviewPresenter = OverviewPresenter(DecisionTree())
+
+    val provisioningPresenter = ProvisioningDiagnosticsPresenter()
 
     private val buildFacts: BuildFacts get() = packageFactsProvider.buildFacts()
 
@@ -68,10 +93,7 @@ class AppGraph(context: Context) {
         return DiagnosticSnapshot(
             aicore = aicore,
             pcs = pcs,
-            pccPermissionState = packageFactsProvider.checkPermission(
-                PackageCatalog.PCS_PACKAGE,
-                PackageCatalog.PCC_PERMISSION,
-            ),
+            permissionMatrix = permissionMatrixProbe.build(packages),
             probe = probe,
             lastFailure = diagnosticBus.lastFailure(),
             build = buildFacts,

@@ -1,6 +1,8 @@
 package dev.shockstruck.gemininano.core.android
 
 import android.content.Intent
+import dev.shockstruck.gemininano.model.PlatformPermissions
+import dev.shockstruck.gemininano.model.PlatformPrincipals
 
 /**
  * The package catalogue the manager inspects and the named permissions whose grant
@@ -8,10 +10,10 @@ import android.content.Intent
  */
 object PackageCatalog {
 
-    const val AICORE_PACKAGE = "com.google.android.aicore"
-    const val AICORE_LEGACY_PACKAGE = "com.google.android.apps.aicore"
-    const val PCS_PACKAGE = "com.google.android.as.oss"
-    const val ASI_PACKAGE = "com.google.android.as"
+    const val AICORE_PACKAGE = PlatformPrincipals.AICORE
+    const val AICORE_LEGACY_PACKAGE = PlatformPrincipals.AICORE_LEGACY
+    const val PCS_PACKAGE = PlatformPrincipals.PCS
+    const val ASI_PACKAGE = PlatformPrincipals.ASI
     const val GMS_PACKAGE = "com.google.android.gms"
     const val PLAY_STORE_PACKAGE = "com.android.vending"
     const val DIALER_PACKAGE = "com.google.android.dialer"
@@ -36,17 +38,24 @@ object PackageCatalog {
         PIXEL_AGENT_PACKAGE,
     )
 
-    const val PCC_PERMISSION = "android.permission.PROVIDE_PRIVATE_COMPUTE_SERVICES"
-    const val AICORE_BIND_PERMISSION = "com.google.android.apps.aicore.service.BIND_SERVICE"
+    const val PCC_PERMISSION = PlatformPermissions.PCC
+    const val AICORE_BIND_PERMISSION = PlatformPermissions.AICORE_BIND
 
-    /** Named permissions whose observable grant state is worth showing for each package. */
+    /**
+     * Named permissions whose observable grant state is worth showing for each package.
+     * The first seven are the permission matrix columns; the extras remain visible in
+     * System Components because they explain the surrounding platform behaviour.
+     */
     val NAMED_PERMISSIONS = listOf(
-        PCC_PERMISSION,
-        AICORE_BIND_PERMISSION,
-        "android.permission.INTERNET",
+        PlatformPermissions.PCC,
+        PlatformPermissions.AICORE_BIND,
+        PlatformPermissions.WRITE_SECURE_SETTINGS,
+        PlatformPermissions.MANAGE_VIRTUAL_MACHINE,
+        PlatformPermissions.READ_DEVICE_CONFIG,
+        PlatformPermissions.READ_RESTRICTED_STATS,
+        PlatformPermissions.INTERNET,
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.READ_LOGS",
-        "android.permission.WRITE_SECURE_SETTINGS",
         "android.permission.QUERY_ALL_PACKAGES",
     )
 
@@ -63,6 +72,7 @@ object PackageCatalog {
         Intent.ACTION_DIAL,
         Intent.ACTION_PROCESS_TEXT,
         Intent.ACTION_GET_CONTENT,
+        Intent.ACTION_APPLICATION_PREFERENCES,
         "android.intent.action.ASSIST",
         "android.intent.action.VOICE_ASSIST",
         "android.service.voice.VoiceInteractionService",

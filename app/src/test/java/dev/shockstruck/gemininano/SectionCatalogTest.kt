@@ -30,14 +30,11 @@ class SectionCatalogTest {
     }
 
     @Test
-    fun fiveSectionsAreHonestStagePlaceholders() {
-        assertEquals(5, SectionCatalog.staged.size)
+    fun twoSectionsRemainHonestStagePlaceholders() {
+        assertEquals(2, SectionCatalog.staged.size)
         assertEquals(
             setOf(
-                Section.AICORE_FEATURES,
-                Section.PRIVATE_COMPUTE_SERVICES,
                 Section.MODEL_MANAGER,
-                Section.PROVISIONING_DIAGNOSTICS,
                 Section.OFFLINE_INFERENCE,
             ),
             SectionCatalog.staged.toSet(),
@@ -48,11 +45,14 @@ class SectionCatalogTest {
     }
 
     @Test
-    fun implementedSectionsAreTheExpectedFive() {
+    fun implementedSectionsAreTheExpectedEight() {
         assertEquals(
             setOf(
                 Section.OVERVIEW,
                 Section.SYSTEM_COMPONENTS,
+                Section.AICORE_FEATURES,
+                Section.PRIVATE_COMPUTE_SERVICES,
+                Section.PROVISIONING_DIAGNOSTICS,
                 Section.PRIVACY,
                 Section.DIAGNOSTIC_LOGS,
                 Section.SETTINGS,

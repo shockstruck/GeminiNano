@@ -2,7 +2,7 @@ package dev.shockstruck.gemininano.ui
 
 /**
  * The ten sections the manager exposes. [implementedInStage] is null for sections that
- * are fully implemented in this Stage 2 build.
+ * are fully implemented in this build (Stage 3b for the provisioning investigation).
  */
 enum class Section(
     val title: String,
@@ -25,32 +25,32 @@ enum class Section(
     AICORE_FEATURES(
         title = "AICore Features",
         shortTitle = "Features",
-        subtitle = "Independent probes for every public ML Kit GenAI feature",
-        implementedInStage = "Stage 3",
+        subtitle = "Independent Prompt probe over the four ModelConfig combinations",
+        implementedInStage = null,
     ),
     PRIVATE_COMPUTE_SERVICES(
         title = "Private Compute Services",
         shortTitle = "PCS",
-        subtitle = "Component discovery and supported binding probes",
-        implementedInStage = "Stage 4",
+        subtitle = "Exported surface, permission matrix and safe bind outcomes",
+        implementedInStage = null,
     ),
     MODEL_MANAGER(
         title = "Model Manager",
         shortTitle = "Models",
         subtitle = "Per-feature download and provisioning controls",
-        implementedInStage = "Stage 3/4",
+        implementedInStage = "Stage 4",
     ),
     PROVISIONING_DIAGNOSTICS(
         title = "Provisioning Diagnostics",
         shortTitle = "Provisioning",
-        subtitle = "The full diagnostic report and decision tree",
-        implementedInStage = "Stage 3/4",
+        subtitle = "Permission, Prompt, PCS surface and the evidence-grounded decision line",
+        implementedInStage = null,
     ),
     OFFLINE_INFERENCE(
         title = "Offline Inference",
         shortTitle = "Offline",
         subtitle = "The full offline inference matrix",
-        implementedInStage = "Stage 3",
+        implementedInStage = "Stage 4",
     ),
     PRIVACY(
         title = "Privacy",

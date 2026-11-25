@@ -7,6 +7,9 @@ package dev.shockstruck.gemininano.model
 interface PackageFactsProvider {
     fun inspectPackages(): List<PackageFacts>
 
+    /** Facts for one package, including this app's own package for the matrix. */
+    fun inspectPackage(packageName: String): PackageFacts
+
     /** Observable grant of [permission] for [packageName] (PackageManager.checkPermission). */
     fun checkPermission(packageName: String, permission: String): GrantState
 

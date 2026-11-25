@@ -31,7 +31,10 @@ class DecisionTreeTest {
         return DiagnosticSnapshot(
             aicore = TestFixtures.packageFacts("com.google.android.aicore", visible = aicoreVisible),
             pcs = TestFixtures.packageFacts("com.google.android.as.oss", visible = pcsVisible),
-            pccPermissionState = pcc,
+            permissionMatrix = TestFixtures.permissionMatrix(
+                pcsVisible = pcsVisible,
+                pcsPcc = pcc,
+            ),
             probe = probe,
             lastFailure = null,
             build = TestFixtures.buildFacts(),
@@ -56,6 +59,14 @@ class DecisionTreeTest {
     fun availableIsOk() {
         val recommendation = tree.recommend(snapshot(FeatureStatusKind.AVAILABLE))
         assertEquals(RecommendationKind.OK, recommendation.kind)
+    }
+
+    @Test
+    fun availableIsNotCalledProvisionedWithoutAGeneration() {
+        val recommendation = tree.recommend(snapshot(FeatureStatusKind.AVAILABLE))
+        assertEquals(RecommendationKind.OK, recommendation.kind)
+        assertTrue(!recommendation.headline.contains("provisioned", ignoreCase = true))
+        assertTrue(!recommendation.detail.contains("provisioned", ignoreCase = true))
     }
 
     @Test

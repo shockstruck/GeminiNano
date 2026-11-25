@@ -22,6 +22,7 @@ android {
 dependencies {
     api(project(":core:model"))
     implementation(libs.mlkit.genai.summarization)
+    implementation(libs.mlkit.genai.prompt)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.guava)
 }
