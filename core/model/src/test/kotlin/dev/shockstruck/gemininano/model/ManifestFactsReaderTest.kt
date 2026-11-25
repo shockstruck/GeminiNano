@@ -282,6 +282,169 @@ class ManifestFactsReaderTest {
     }
 
     @Test
+    fun activityAliasWithIntentFilterIsRecordedAndDoesNotFailTheRead() {
+        val events = manifestEvents(
+            listOf(
+                start("activity", attribute("name", ".Target")),
+                end("activity"),
+                start(
+                    "activity-alias",
+                    attribute("name", ".Alias"),
+                    attribute("targetActivity", ".Target"),
+                    attribute("privateComputeCore", "true", raw = null, dataType = "boolean"),
+                ),
+                start("intent-filter"),
+                start("action", attribute("name", "com.google.android.as.oss.action.ALIAS")),
+                end("action"),
+                end("intent-filter"),
+                end("activity-alias"),
+            ),
+        )
+
+        val delivered = read(visible(base(events))) as ManifestReadOutcome.Read
+        val alias = delivered.facts.components.single { it.kind == "activity-alias" }
+        assertEquals(".Alias", alias.name)
+        assertEquals(".Target", alias.targetActivity)
+        assertEquals(listOf("com.google.android.as.oss.action.ALIAS"), alias.intentFilters.single().actions)
+        assertEquals(ManifestBooleanValue.TRUE, alias.privateComputeCore)
+    }
+
+    @Test
+    fun intentFilterOutsideAComponentDoesNotFailTheRead() {
+        val events = manifestEvents(
+            listOf(
+                start("intent-filter"),
+                start("action", attribute("name", "com.example.ORPHAN")),
+                end("action"),
+                end("intent-filter"),
+            ),
+        )
+
+        val delivered = read(visible(base(events))) as ManifestReadOutcome.Read
+        assertTrue(delivered.facts.components.isEmpty())
+        assertTrue(delivered.facts.complete)
+    }
+
+    @Test
+    fun activityAliasPrivateComputeCoreTrueIsNeverPccComponentDeclared() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "activity-alias",
+                    attribute("name", ".Alias"),
+                    attribute("targetActivity", ".Target"),
+                    attribute("privateComputeCore", "true", raw = null, dataType = "boolean"),
+                ),
+                end("activity-alias"),
+            ),
+        )
+
+        val evidence = pccComponentEvidence(read(visible(base(events))))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertTrue(evidence.pccComponents.reason.contains("activity-alias"))
+    }
+
+    @Test
+    fun activityAliasPrivateComputeCoreReferenceIsUnreadable() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "activity-alias",
+                    attribute("name", ".Alias"),
+                    attribute("targetActivity", ".Target"),
+                    attribute("privateComputeCore", "@0x7f010001", raw = null, dataType = "reference"),
+                ),
+                end("activity-alias"),
+            ),
+        )
+
+        val evidence = pccComponentEvidence(read(visible(base(events))))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(ManifestBooleanValue.UNRESOLVED, evidence.pccComponents.matched.firstOrNull()?.privateComputeCore)
+    }
+
+    @Test
+    fun activityAliasUnnamedAttributeIsUnreadable() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "activity-alias",
+                    attribute("name", ".Alias"),
+                    attribute("targetActivity", ".Target"),
+                    ManifestAttribute("", null, 0x01010010, "true", "true", "boolean"),
+                ),
+                end("activity-alias"),
+            ),
+        )
+
+        val evidence = pccComponentEvidence(read(visible(base(events))))
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.otherSandboxAttributes.state)
+    }
+
+    @Test
+    fun activityAliasPrivateComputeCoreFalseDoesNotBlockNotDeclared() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "activity-alias",
+                    attribute("name", ".Alias"),
+                    attribute("targetActivity", ".Target"),
+                    attribute("privateComputeCore", "false", raw = null, dataType = "boolean"),
+                ),
+                end("activity-alias"),
+            ),
+        )
+
+        val evidence = pccComponentEvidence(read(visible(base(events))))
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.pccComponents.state)
+    }
+
+    @Test
+    fun privateComputeCoreInAForeignNamespaceIsIgnoredForEvidence() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "service",
+                    attribute("name", ".ForeignNamespaceService"),
+                    attribute(
+                        "privateComputeCore",
+                        "true",
+                        namespace = "http://example.com/other",
+                        raw = null,
+                        dataType = "boolean",
+                    ),
+                ),
+                end("service"),
+            ),
+        )
+
+        val delivered = read(visible(base(events))) as ManifestReadOutcome.Read
+        assertEquals(ManifestBooleanValue.ABSENT, delivered.facts.components.single().privateComputeCore)
+        val evidence = pccComponentEvidence(delivered)
+        assertEquals(PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST, evidence.pccComponents.state)
+    }
+
+    @Test
+    fun privateComputeCoreWithoutANamespaceIsUnresolved() {
+        val events = manifestEvents(
+            listOf(
+                start(
+                    "service",
+                    attribute("name", ".UnqualifiedService"),
+                    attribute("privateComputeCore", "true", namespace = null, raw = null, dataType = "boolean"),
+                ),
+                end("service"),
+            ),
+        )
+
+        val delivered = read(visible(base(events))) as ManifestReadOutcome.Read
+        assertEquals(ManifestBooleanValue.UNRESOLVED, delivered.facts.components.single().privateComputeCore)
+        val evidence = pccComponentEvidence(delivered)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+    }
+
+    @Test
     fun queriesPackagesAndIntentActionsAreRecorded() {
         val events = listOf(
             start("manifest", attribute("package", PACKAGE, namespace = null)),
@@ -300,13 +463,15 @@ class ManifestFactsReaderTest {
             end("manifest"),
         )
 
-        val queries = (read(visible(base(events))) as ManifestReadOutcome.Read).facts.queries.single()
+        val delivered = read(visible(base(events))) as ManifestReadOutcome.Read
+        val queries = delivered.facts.queries.single()
         assertEquals(
             setOf("com.google.android.aicore", "com.google.android.as.oss"),
             queries.packages.toSet(),
         )
         assertEquals(listOf("android.intent.action.PROBE"), queries.intentActions)
         assertEquals(listOf("dev.shockstruck.provider"), queries.providerAuthorities)
+        assertTrue("queries provider must not be a component", delivered.facts.components.isEmpty())
     }
 
     @Test
@@ -586,6 +751,7 @@ class ManifestFactsReaderTest {
 
         val evidence = pccComponentEvidence(delivered)
         assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.pccComponents.state)
+        assertEquals(PccComponentEvidenceState.UNREADABLE, evidence.otherSandboxAttributes.state)
         assertTrue(evidence.pccComponents.reason.contains("readable name"))
     }
 

@@ -91,13 +91,13 @@ class ManifestFactsParser(
                 event.name.startsWith("uses-permission") ->
                     usesPermissions.record(usesPermissionFacts(attributes))
 
-                event.name in COMPONENT_NAMES ->
+                event.name in COMPONENT_NAMES && queriesDepth == null ->
                     openComponents += ComponentBuilder(depth, componentFacts(event.name, attributes))
 
                 event.name == "intent-filter" -> {
-                    val component = openComponents.lastOrNull()
-                        ?: throw ManifestFormatException("intent-filter outside a component")
-                    openFilters += FilterBuilder(depth, component)
+                    openComponents.lastOrNull()?.let { component ->
+                        openFilters += FilterBuilder(depth, component)
+                    }
                 }
 
                 event.name == "action" && openFilters.isNotEmpty() ->
@@ -189,15 +189,22 @@ class ManifestFactsParser(
             kind: String,
             attributes: List<ManifestAttribute>,
         ): ManifestComponentFacts {
-            val privateComputeCore = attributes.firstOrNull { it.name == PRIVATE_COMPUTE_CORE }
+            val pccAttributes = attributes.filter { it.name == PRIVATE_COMPUTE_CORE }
+            val androidPcc = pccAttributes.firstOrNull { it.namespace == ANDROID_NAMESPACE }
+            val unqualifiedPcc = pccAttributes.firstOrNull { it.namespace.isNullOrEmpty() }
+            val privateComputeCore = when {
+                androidPcc != null -> privateComputeCoreValue(androidPcc)
+                unqualifiedPcc != null -> ManifestBooleanValue.UNRESOLVED
+                else -> ManifestBooleanValue.ABSENT
+            }
             return ManifestComponentFacts(
                 kind = kind,
                 name = attributeValue(attributes, "name"),
+                targetActivity = attributeValue(attributes, "targetActivity"),
                 exported = attributeValue(attributes, "exported")?.toBooleanOrNull(),
                 permission = attributeValue(attributes, "permission"),
                 process = attributeValue(attributes, "process"),
-                privateComputeCore = privateComputeCore?.let(::privateComputeCoreValue)
-                    ?: ManifestBooleanValue.ABSENT,
+                privateComputeCore = privateComputeCore,
                 matchingAttributes = attributes
                     .filter { it.name.isNotBlank() }
                     .filter { it.name.manifestHasAnyToken(MANIFEST_COMPONENT_ATTRIBUTE_TOKENS) }
@@ -309,7 +316,7 @@ class ManifestFactsParser(
     }
 
     private companion object {
-        val COMPONENT_NAMES = setOf("activity", "service", "receiver", "provider")
+        val COMPONENT_NAMES = setOf("activity", "service", "receiver", "provider", "activity-alias")
 
         const val ANDROID_NAMESPACE = "http://schemas.android.com/apk/res/android"
         const val PRIVATE_COMPUTE_CORE = "privateComputeCore"

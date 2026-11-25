@@ -104,6 +104,7 @@ data class ManifestQueriesFacts(
 data class ManifestComponentFacts(
     val kind: String,
     val name: String?,
+    val targetActivity: String? = null,
     val exported: Boolean?,
     val permission: String?,
     val process: String?,
@@ -243,6 +244,8 @@ data class PccComponentEvidence(
 
 private val MANIFEST_ASSOCIATION_ELEMENT_TOKENS = listOf("component-access", "association")
 
+private val MANIFEST_PCC_COMPONENT_KINDS = setOf("activity", "service", "receiver", "provider")
+
 internal val MANIFEST_PCC_ELEMENT_TOKENS =
     listOf("component-access", "association", "pcc", "privatecompute")
 
@@ -323,12 +326,14 @@ private fun componentEvidence(
     complete: Boolean,
 ): PccEvidence<ManifestComponentFacts> {
     val components = facts.components
-    val declared = components.filter { it.privateComputeCore == ManifestBooleanValue.TRUE }
+    val declared = components.filter {
+        it.kind in MANIFEST_PCC_COMPONENT_KINDS && it.privateComputeCore == ManifestBooleanValue.TRUE
+    }
     if (declared.isNotEmpty()) {
         return PccEvidence(
             PccComponentEvidenceState.DECLARED,
             declared,
-            "${declared.size} component(s) declare android:privateComputeCore=\"true\"",
+            "${declared.size} ${MANIFEST_PCC_COMPONENT_KINDS.joinToString("/")} component(s) declare android:privateComputeCore=\"true\"",
         )
     }
     if (!complete) {
@@ -345,6 +350,16 @@ private fun componentEvidence(
             "${unresolved.size} component(s) declare android:privateComputeCore as an unresolved value",
         )
     }
+    val aliasDeclared = components.filter {
+        it.kind !in MANIFEST_PCC_COMPONENT_KINDS && it.privateComputeCore == ManifestBooleanValue.TRUE
+    }
+    if (aliasDeclared.isNotEmpty()) {
+        return PccEvidence(
+            PccComponentEvidenceState.UNREADABLE,
+            aliasDeclared,
+            "${aliasDeclared.size} activity-alias declaration(s) set android:privateComputeCore=\"true\"; an alias is not one of ${MANIFEST_PCC_COMPONENT_KINDS.joinToString("/")}",
+        )
+    }
     val unnamed = components.filter { it.hasUnnamedAttributes }
     if (unnamed.isNotEmpty()) {
         return PccEvidence(
@@ -355,7 +370,7 @@ private fun componentEvidence(
     }
     return PccEvidence(
         PccComponentEvidenceState.NOT_DECLARED_IN_READ_MANIFEST,
-        reason = "${components.size} component(s) read completely; none declares android:privateComputeCore=\"true\"",
+        reason = "${components.size} component(s) read completely; none of ${MANIFEST_PCC_COMPONENT_KINDS.joinToString("/")} declares android:privateComputeCore=\"true\"",
     )
 }
 
@@ -409,6 +424,13 @@ private fun sandboxEvidence(
         return PccEvidence(
             PccComponentEvidenceState.UNREADABLE,
             reason = "${facts.failures.size} manifest(s) could not be read, so absence cannot be claimed",
+        )
+    }
+    val unnamed = facts.components.filter { it.hasUnnamedAttributes }
+    if (unnamed.isNotEmpty()) {
+        return PccEvidence(
+            PccComponentEvidenceState.UNREADABLE,
+            reason = "${unnamed.size} component(s) carry an attribute without a readable name, which could be isolatedProcess or process",
         )
     }
     return PccEvidence(
