@@ -158,11 +158,20 @@ and for INDETERMINATE the still-open candidates each with its missing observatio
 - **A declared association policy is not proof of enforcement.** A mismatch selects only from a
   complete PCS manifest whose matched policy elements all returned readable package names and a
   visible installed AICore package.
+- **ML Kit's wrapper is stripped before the message rules run.** Only the text after the
+  wrapper is matched: an optional `[ErrorCode n]`, then
+  `AICore failed with error type …-… and error code …-…:`. The exported evidence keeps the
+  full message.
 - **NPU access restrictions are never selected from a denied `ACCESS_NPU_MODEL_MANAGER_API`,
-  `USE_ON_DEVICE_INTELLIGENCE` or `MANAGE_VIRTUAL_MACHINE` grant.** The same message must name
-  the NPU **and** a denial, refusal or failed access; an NPU name alone is evidence only.
-- **A local “not eligible” message without a server, remote or backend source is a candidate**,
-  because a local eligibility read looks the same.
+  `USE_ON_DEVICE_INTELLIGENCE` or `MANAGE_VIRTUAL_MACHINE` grant.** The same clause must name
+  the NPU **and** an access denial, refusal or failed access. Bare “fail”, “cannot” and
+  “unavailable” do not count, and an NPU name alone is evidence only.
+- **A local “not eligible” message without a whole-word server, remote, backend or cloud source
+  is a candidate**, because a local eligibility read looks the same. Source words match as whole
+  words, so `RemoteException` and `system_server` do not count; a rejection with only `provision`
+  or `download` in the clause is a candidate too.
+- **Negated failure words do not count.** “not denied”, “not rejected” and “not missing” do not
+  satisfy the NPU, remote, configuration or registration rule.
 - **A generation that succeeded conflicts with any selected class** and makes the result
   `INDETERMINATE`; the success is listed as evidence.
 - **The classifier uses only the gRPC bind row** (`AstreaGrpcService`/`PcsGrpcService`). A

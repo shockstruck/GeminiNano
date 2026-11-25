@@ -209,8 +209,11 @@ data class ClassifierInput(
  * A class is selected only when an observation holds for every caller, or when the
  * message itself names the failure:
  *
- * - a message whose same clause names the missing configuration, an NPU denial, a
- *   remote rejection or model/feature registration;
+ * - a message whose same clause, after the ML Kit wrapper (`[ErrorCode n]` optional,
+ *   then `AICore failed with error type ... and error code ...:`) is removed, names the
+ *   missing configuration, an NPU access denial, a remote rejection from a whole-word
+ *   server/remote/backend/cloud source, or model/feature registration. A negated
+ *   failure word ("not denied", "not rejected", "not missing") does not count;
  * - the installed PCS gRPC service is declared but not effectively enabled
  *   (initialization), or declared but not exported (authorization, unless PCS and
  *   AICore share a UID);
@@ -232,10 +235,12 @@ data class ClassifierInput(
  *   does not refute it, because an unwritten DeviceConfig namespace leaves the same
  *   default;
  * - a denied NPU, on-device-intelligence or virtual-machine permission is never
- *   evidence for NPU access restrictions; a message must name the NPU and a denial,
- *   refusal or failed access;
- * - a local "not eligible" message without a server, remote or backend source is a
- *   candidate only;
+ *   evidence for NPU access restrictions; the same clause must name the NPU and an
+ *   access denial, refusal or failed access. Bare "fail", "cannot" and "unavailable" do
+ *   not count;
+ * - a local "not eligible" message without a whole-word server, remote, backend or cloud
+ *   source is a candidate only; "RemoteException" and "system_server" do not count as
+ *   sources;
  * - a null binding of `GenAiInferenceService` is never used: only the gRPC row counts,
  *   and this app's own bind never stands in for AICore's access;
  * - a generation that succeeded conflicts with any selected class and makes the result
@@ -592,11 +597,11 @@ class ProvisioningFailureClassifier {
             PcsBindOutcome.BINDER_RETURNED,
             -> Unit
         }
-        if (localEligibilityMessages(input.messages).isNotEmpty()) {
+        if (remoteCandidateMessages(input.messages).isNotEmpty()) {
             candidate(
                 ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
-                "an eligibility message has no server, remote or backend wording; local " +
-                    "eligibility reads the same",
+                "an eligibility or rejection clause has no whole-word server, remote, " +
+                    "backend or cloud source; a local PCS refusal reads the same",
                 "a PCS or backend response naming device eligibility",
             )
         }
@@ -1119,17 +1124,28 @@ class ProvisioningFailureClassifier {
 
     // -- Message matching --------------------------------------------------------------
 
+    /**
+     * The ML Kit wrapper ("[ErrorCode n] AICore failed with error type <n>-<NAME> and
+     * error code <n>-<NAME>:") puts "failed" and "error" on every message. It is removed
+     * before the rules run; the exported evidence keeps the full message.
+     */
+    private fun messageBody(text: String): String = MLKIT_WRAPPER.replace(text, "")
+
     private fun npuMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            val text = message.text.lowercase()
-            val namesNpu = NPU_PATTERN.containsMatchIn(text) ||
-                text.contains("neural processing")
-            namesNpu && DENIAL_WORDS.any { text.contains(it) } && !hasNegatedFailure(text)
+            clausesOf(messageBody(message.text)).any { clause ->
+                namesNpu(clause) &&
+                    NPU_DENIAL_PHRASES.any { clause.contains(it) } &&
+                    !hasNegatedFailure(clause)
+            }
         }
+
+    private fun namesNpu(clause: String): Boolean =
+        NPU_PATTERN.containsMatchIn(clause) || clause.contains("neural processing")
 
     private fun configurationMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            clausesOf(message.text).any { clause ->
+            clausesOf(messageBody(message.text)).any { clause ->
                 (clause.contains("configuration") || clause.contains("manifest")) &&
                     (MISSING_WORDS.any { clause.contains(it) } ||
                         FAILURE_WORDS.any { clause.contains(it) }) &&
@@ -1139,27 +1155,45 @@ class ProvisioningFailureClassifier {
 
     private fun remoteRejectionMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            val text = message.text.lowercase()
-            val eligibility = isEligibilityNegative(text) &&
-                REMOTE_SOURCE_WORDS.any { text.contains(it) }
-            val rejected = text.contains("reject") &&
-                (REMOTE_SOURCE_WORDS.any { text.contains(it) } || text.contains("provision"))
-            val httpAuth = (text.contains("http 401") || text.contains("http 403") ||
-                text.contains("forbidden")) &&
-                (REMOTE_SOURCE_WORDS.any { text.contains(it) } ||
-                    text.contains("download") || text.contains("provision"))
-            eligibility || rejected || httpAuth
+            clausesOf(messageBody(message.text)).any { clause -> remoteSupport(clause) }
         }
 
-    private fun localEligibilityMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
+    /**
+     * A rejection clause without a whole-word server, remote, backend or cloud source is a
+     * candidate only: a local PCS refusal reads the same. `provision` or `download` alone
+     * does not make the source remote.
+     */
+    private fun remoteCandidateMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            val text = message.text.lowercase()
-            isEligibilityNegative(text) && REMOTE_SOURCE_WORDS.none { text.contains(it) }
+            val clauses = clausesOf(messageBody(message.text))
+            clauses.none { remoteSupport(it) } && clauses.any { localRemoteCandidate(it) }
         }
+
+    private fun remoteSupport(clause: String): Boolean {
+        if (hasNegatedFailure(clause)) return false
+        if (!hasRemoteSource(clause)) return false
+        return isEligibilityNegative(clause) ||
+            REJECT_PATTERN.containsMatchIn(clause) ||
+            FORBIDDEN_PATTERN.containsMatchIn(clause) ||
+            HTTP_AUTH_PATTERN.containsMatchIn(clause)
+    }
+
+    private fun localRemoteCandidate(clause: String): Boolean {
+        if (hasNegatedFailure(clause)) return false
+        if (hasRemoteSource(clause)) return false
+        if (isEligibilityNegative(clause)) return true
+        val rejection = REJECT_PATTERN.containsMatchIn(clause) ||
+            FORBIDDEN_PATTERN.containsMatchIn(clause) ||
+            HTTP_AUTH_PATTERN.containsMatchIn(clause)
+        return rejection && (clause.contains("provision") || clause.contains("download"))
+    }
+
+    private fun hasRemoteSource(clause: String): Boolean =
+        REMOTE_SOURCE_PATTERN.containsMatchIn(clause)
 
     private fun registrationMessages(messages: List<ClassifierMessage>): List<ClassifierMessage> =
         messages.filter { message ->
-            clausesOf(message.text).any { clause ->
+            clausesOf(messageBody(message.text)).any { clause ->
                 clause.contains("regist") &&
                     (clause.contains("model") || clause.contains("feature")) &&
                     FAILURE_WORDS.any { clause.contains(it) } &&
@@ -1171,13 +1205,14 @@ class ProvisioningFailureClassifier {
     private fun isEligibilityNegative(text: String): Boolean =
         text.contains("not eligible") || text.contains("ineligible")
 
+    /** Splits on sentence punctuation and conjunctions, never on ':' so "NPU: denied" stays whole. */
     private fun clausesOf(text: String): List<String> =
         text.lowercase()
             .split(CLAUSE_SPLIT)
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
-    /** A failure word in a negated clause ("no error", "without failure") is not a failure. */
+    /** A negated failure word ("not denied", "not rejected", "not missing") is not a failure. */
     private fun hasNegatedFailure(text: String): Boolean =
         NEGATED_FAILURE_PHRASES.any { text.contains(it) }
 
@@ -1314,7 +1349,15 @@ class ProvisioningFailureClassifier {
             PcsBindOutcome.BIND_ERROR,
         )
 
-        val DENIAL_WORDS = listOf(
+        val MLKIT_WRAPPER = Regex(
+            """^\s*(?:\[ErrorCode\s+\d+\]\s*)?AICore failed with error type\s+\d+-[A-Z0-9_]+ and error code\s+\d+-[A-Z0-9_]+:\s*""",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /** Access-specific NPU denials; bare "fail", "cannot" and "unavailable" do not count. */
+        val NPU_DENIAL_PHRASES = listOf(
+            "access denied",
+            "denied access",
             "denied",
             "denial",
             "refused",
@@ -1323,10 +1366,14 @@ class ProvisioningFailureClassifier {
             "blocked",
             "restricted",
             "not allowed",
-            "unavailable",
-            "cannot",
+            "not permitted",
+            "failed to access",
+            "cannot access",
+            "can't access",
+            "unable to access",
             "no access",
-            "fail",
+            "access failure",
+            "not accessible",
         )
 
         val FAILURE_WORDS = listOf(
@@ -1351,12 +1398,19 @@ class ProvisioningFailureClassifier {
         )
 
         val NEGATED_FAILURE_PHRASES = listOf(
+            "not denied",
+            "not rejected",
+            "not missing",
+            "not refused",
+            "not forbidden",
+            "not blocked",
+            "not restricted",
+            "not failed",
             "no error",
             "no failure",
             "without error",
             "without failure",
             "not an error",
-            "not failed",
             "no errors",
             "0 errors",
             "no denial",
@@ -1364,7 +1418,19 @@ class ProvisioningFailureClassifier {
             "no problem",
         )
 
-        val REMOTE_SOURCE_WORDS = listOf("server", "remote", "backend", "cloud")
+        val REMOTE_SOURCE_PATTERN = Regex(
+            """\b(?:server|remote|backend|cloud)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+
+        val REJECT_PATTERN = Regex(
+            """\breject(?:ed|s|ion)?\b""",
+            RegexOption.IGNORE_CASE,
+        )
+
+        val FORBIDDEN_PATTERN = Regex("""\bforbidden\b""", RegexOption.IGNORE_CASE)
+
+        val HTTP_AUTH_PATTERN = Regex("""\b(?:401|403)\b""")
 
         val CLAUSE_SPLIT = Regex(
             """[;,.!?]|\bbut\b|\bwhile\b|\balthough\b|\bhowever\b|\bthen\b""",

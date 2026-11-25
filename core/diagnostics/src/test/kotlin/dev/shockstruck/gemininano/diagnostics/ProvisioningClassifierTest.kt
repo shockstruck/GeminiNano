@@ -402,102 +402,271 @@ class ProvisioningClassifierTest {
 
     // -- Item 3: message rules --------------------------------------------------------
 
-    @Test
-    fun npuRestrictionsNeedAMessageNamingTheNpuAndADenial() {
-        val positive = classifier.classify(
-            input(messages = listOf(ClassifierMessage("aicore", "NPU access denied for this process"))),
-        )
-        assertEquals(ProvisioningFailureClass.NPU_ACCESS_RESTRICTIONS, positive.result)
-        assertTrue(positive.summary.contains("no denied permission was used"))
+    private val mlkitWrapper =
+        "[ErrorCode 606] AICore failed with error type 3-PREPARATION_ERROR and " +
+            "error code 606-FEATURE_NOT_FOUND: "
 
-        val negative = classifier.classify(
-            input(messages = listOf(ClassifierMessage("aicore", "NPU present; capability reported"))),
-        )
-        assertEquals(ProvisioningFailureClass.INDETERMINATE, negative.result)
-        assertTrue(negative.evidence.any { it.statement.contains("NPU present") })
+    private fun wrapped(tail: String): String = mlkitWrapper + tail
+
+    private fun messageResult(text: String) = classifier.classify(
+        input(messages = listOf(ClassifierMessage("aicore", text))),
+    )
+
+    private fun assertSelected(expected: ProvisioningFailureClass, text: String) {
+        val result = messageResult(text)
+        assertEquals("text: $text", expected, result.result)
+    }
+
+    private fun assertIndeterminate(text: String) {
+        val result = messageResult(text)
+        assertEquals("text: $text", ProvisioningFailureClass.INDETERMINATE, result.result)
+    }
+
+    // The review table rows, each with its expected result.
+
+    @Test
+    fun tableRow1NpuPendingWithWrapperIsIndeterminate() {
+        assertIndeterminate(wrapped("NPU model variant 5 is pending."))
     }
 
     @Test
-    fun aLocalEligibilityMessageIsOnlyACandidate() {
-        val local = classifier.classify(
-            input(
-                messages = listOf(
-                    ClassifierMessage("aicore", "Device is not eligible for this provisioning cohort"),
-                ),
-            ),
+    fun tableRow2NpuPresentDownloadFailedIsIndeterminate() {
+        assertIndeterminate("NPU present; model download failed")
+    }
+
+    @Test
+    fun tableRow3CurrentManifestWithWrapperIsIndeterminate() {
+        assertIndeterminate(wrapped("Manifest version 5 is current."))
+    }
+
+    @Test
+    fun tableRow4RegisteredWaitingWithWrapperIsIndeterminate() {
+        assertIndeterminate(
+            wrapped("Feature 622 model is registered and waiting for download."),
         )
-        assertEquals(ProvisioningFailureClass.INDETERMINATE, local.result)
-        val candidate = local.candidates.first {
+    }
+
+    @Test
+    fun tableRow5RemoteExceptionCallRejectedIsIndeterminate() {
+        val result = messageResult("android.os.RemoteException: call rejected")
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        assertTrue(
+            result.candidates.none {
+                it.failureClass == ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION
+            },
+        )
+    }
+
+    @Test
+    fun tableRow6LocalEligibilityIsOnlyACandidate() {
+        val result = messageResult("Not eligible on this device; server not contacted")
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        val candidate = result.candidates.first {
             it.failureClass == ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION
         }
-        assertTrue(candidate.why.contains("local eligibility"))
+        assertTrue(candidate.why.contains("whole-word"))
     }
 
     @Test
-    fun aRemoteEligibilityMessageSelectsRemoteRejection() {
-        val result = classifier.classify(
-            input(
-                messages = listOf(
-                    ClassifierMessage(
-                        "download:summarization",
-                        "Backend response: device is not eligible for this provisioning cohort",
-                    ),
-                ),
-            ),
+    fun tableRow7PhoneMessageWithWrapperSelectsNothing() {
+        val result = messageResult(wrapped("Feature 622 is not available."))
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        assertTrue(
+            result.candidates.none {
+                it.failureClass in setOf(
+                    ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+                    ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+                    ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
+                )
+            },
         )
-        assertEquals(ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION, result.result)
+    }
+
+    // Each rule positive and negative, with and without the wrapper.
+
+    @Test
+    fun npuRulePositiveWithoutWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.NPU_ACCESS_RESTRICTIONS,
+            "NPU access denied",
+        )
     }
 
     @Test
-    fun configurationMessageRequiresTheFailureInTheSameClause() {
-        val positive = classifier.classify(
-            input(
-                messages = listOf(
-                    ClassifierMessage("aicore", "Feature configuration manifest is missing for feature 622"),
-                ),
-            ),
+    fun npuRulePositiveWithWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.NPU_ACCESS_RESTRICTIONS,
+            wrapped("NPU access denied"),
         )
-        assertEquals(ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION, positive.result)
-
-        val negative = classifier.classify(
-            input(messages = listOf(ClassifierMessage("aicore", "manifest read; no error"))),
-        )
-        assertEquals(ProvisioningFailureClass.INDETERMINATE, negative.result)
-
-        val negated = classifier.classify(
-            input(messages = listOf(ClassifierMessage("aicore", "manifest read without error"))),
-        )
-        assertEquals(ProvisioningFailureClass.INDETERMINATE, negated.result)
     }
 
     @Test
-    fun registrationMessageRequiresTheFailureInTheSameClause() {
-        val positive = classifier.classify(
-            input(
-                messages = listOf(
-                    ClassifierMessage("aicore", "model registration failed for feature 622"),
-                ),
-            ),
-        )
-        assertEquals(ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE, positive.result)
+    fun npuRuleNegativeWithoutWrapper() {
+        assertIndeterminate("NPU present; capability reported")
+    }
 
-        val negative = classifier.classify(
-            input(
-                messages = listOf(
-                    ClassifierMessage("aicore", "registration complete, download failed"),
-                ),
-            ),
-        )
-        assertEquals(ProvisioningFailureClass.INDETERMINATE, negative.result)
+    @Test
+    fun npuRuleNegativeWithWrapper() {
+        assertIndeterminate(wrapped("NPU is present and reported."))
+    }
 
-        val modelNegative = classifier.classify(
-            input(
-                messages = listOf(
-                    ClassifierMessage("aicore", "model registration complete, download failed"),
-                ),
-            ),
+    @Test
+    fun configurationRulePositiveWithoutWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+            "feature configuration manifest is missing",
         )
-        assertEquals(ProvisioningFailureClass.INDETERMINATE, modelNegative.result)
+    }
+
+    @Test
+    fun configurationRulePositiveWithWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+            wrapped("feature configuration manifest is missing"),
+        )
+    }
+
+    @Test
+    fun configurationRuleNegativeWithoutWrapper() {
+        assertIndeterminate("manifest read; no error")
+    }
+
+    @Test
+    fun configurationRuleNegativeWithWrapper() {
+        assertIndeterminate(wrapped("Manifest version 5 is current."))
+    }
+
+    @Test
+    fun registrationRulePositiveWithoutWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
+            "model registration failed",
+        )
+    }
+
+    @Test
+    fun registrationRulePositiveWithWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
+            wrapped("model registration failed"),
+        )
+    }
+
+    @Test
+    fun registrationRuleNegativeWithoutWrapper() {
+        assertIndeterminate("model registration complete, download failed")
+    }
+
+    @Test
+    fun registrationRuleNegativeWithWrapper() {
+        assertIndeterminate(
+            wrapped("Feature 622 model is registered and waiting for download."),
+        )
+    }
+
+    @Test
+    fun remoteRulePositiveWithoutWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+            "server rejected the request",
+        )
+    }
+
+    @Test
+    fun remoteRulePositiveWithWrapper() {
+        assertSelected(
+            ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+            wrapped("server rejected the request"),
+        )
+    }
+
+    @Test
+    fun remoteRuleNegativeWithoutWrapper() {
+        assertIndeterminate("Not eligible on this device; server not contacted")
+    }
+
+    @Test
+    fun remoteRuleNegativeWithWrapper() {
+        assertIndeterminate(wrapped("Not eligible on this device; server not contacted"))
+    }
+
+    // Negated failure words do not count in any of the four rules.
+
+    @Test
+    fun negatedNpuDenialDoesNotSelect() {
+        assertIndeterminate("NPU access not denied")
+    }
+
+    @Test
+    fun negatedRemoteRejectionDoesNotSelect() {
+        assertIndeterminate("server request not rejected")
+    }
+
+    @Test
+    fun negatedMissingConfigurationDoesNotSelect() {
+        assertIndeterminate("configuration manifest not missing")
+    }
+
+    @Test
+    fun negatedRegistrationFailureDoesNotSelect() {
+        assertIndeterminate("model registration not failed")
+    }
+
+    // Whole-word sources and wrapper variants.
+
+    @Test
+    fun systemServerWithUnderscoreIsNotARemoteSource() {
+        assertIndeterminate("system_server: request rejected, download failed")
+    }
+
+    @Test
+    fun aRejectionWithOnlyDownloadIsACandidateNotASelection() {
+        val result = messageResult("download rejected with HTTP 403")
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        assertTrue(
+            result.candidates.any {
+                it.failureClass == ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION
+            },
+        )
+    }
+
+    @Test
+    fun theWrapperWithoutErrorCodePrefixIsAlsoStripped() {
+        val text = "AICore failed with error type 3-PREPARATION_ERROR and " +
+            "error code 606-FEATURE_NOT_FOUND: Feature 622 is not available."
+        val result = messageResult(text)
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        assertTrue(
+            result.candidates.none {
+                it.failureClass in setOf(
+                    ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+                    ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+                    ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
+                )
+            },
+        )
+    }
+
+    @Test
+    fun theFourDeviceMessagesAreIndeterminate() {
+        listOf(622, 607, 614, 627).forEach { featureId ->
+            val result = messageResult(wrapped("Feature $featureId is not available."))
+            assertEquals(
+                "feature $featureId",
+                ProvisioningFailureClass.INDETERMINATE,
+                result.result,
+            )
+            assertTrue(
+                result.candidates.none {
+                    it.failureClass in setOf(
+                        ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+                        ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+                        ProvisioningFailureClass.MODEL_REGISTRATION_FAILURE,
+                    )
+                },
+            )
+            assertTrue(result.evidence.any { it.statement.contains("Feature $featureId") })
+        }
     }
 
     // -- Item 4: a successful generation conflicts with a selected class --------------
