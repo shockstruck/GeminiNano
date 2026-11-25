@@ -24,12 +24,12 @@ you can also build it locally (see [Build](#build)). Installing it needs only th
    permission to install unknown apps. Allow it for that app
    (`Settings → Apps → Special app access → Install unknown apps`); the grant belongs to the
    file manager or browser, not to Gemini Nano Manager.
-3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager**,
-   version `0.4.0-offline` (versionCode 4). If your installer does not display the package name,
-   confirm it after the first launch in **Settings → Version and provenance** (Application ID
-   `dev.shockstruck.gemininano`) and in **System Components** (version, installer and signing
-   certificate SHA-256). If the package name or version differs, you are installing the wrong
-   file — stop and re-download it.
+3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager** and
+   version `0.4.0-offline`. If your installer does not display the package name or version code,
+   confirm them after the first launch in **Settings → Version and provenance** (Application ID
+   `dev.shockstruck.gemininano`, version name and code) and in **System Components** (version,
+   installer and signing certificate SHA-256). If the package name or version differs, you are
+   installing the wrong file — stop and re-download it.
 4. **If installation fails with a signature mismatch**, uninstall the older debug build first.
    Debug APKs signed with different debug keys cannot upgrade each other, so the installer
    rejects the new one. Uninstalling also clears the app's local settings and stored probe
