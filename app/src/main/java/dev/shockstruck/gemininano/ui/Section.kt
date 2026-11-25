@@ -1,8 +1,8 @@
 package dev.shockstruck.gemininano.ui
 
 /**
- * The ten sections the manager exposes. [implementedInStage] is null for sections that
- * are fully implemented in this build (Stage 3b for the provisioning investigation).
+ * The ten sections the manager exposes. [implementedInStage] is null for every section
+ * once Stage 4 completes; the field remains for any future honest placeholder.
  */
 enum class Section(
     val title: String,
@@ -37,8 +37,8 @@ enum class Section(
     MODEL_MANAGER(
         title = "Model Manager",
         shortTitle = "Models",
-        subtitle = "Per-feature download and provisioning controls",
-        implementedInStage = "Stage 4",
+        subtitle = "Per-feature status, explicit downloads, progress and retry",
+        implementedInStage = null,
     ),
     PROVISIONING_DIAGNOSTICS(
         title = "Provisioning Diagnostics",
@@ -49,8 +49,8 @@ enum class Section(
     OFFLINE_INFERENCE(
         title = "Offline Inference",
         shortTitle = "Offline",
-        subtitle = "The full offline inference matrix",
-        implementedInStage = "Stage 4",
+        subtitle = "Fixed-input inference per AVAILABLE feature",
+        implementedInStage = null,
     ),
     PRIVACY(
         title = "Privacy",

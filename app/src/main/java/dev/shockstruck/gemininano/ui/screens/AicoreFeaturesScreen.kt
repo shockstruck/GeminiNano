@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -15,14 +16,17 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import dev.shockstruck.gemininano.AppGraph
+import dev.shockstruck.gemininano.model.FeatureStatusKind
+import dev.shockstruck.gemininano.model.SummarizationProbeResult
 import dev.shockstruck.gemininano.ui.components.Bullet
+import dev.shockstruck.gemininano.ui.components.FeatureMatrixCard
 import dev.shockstruck.gemininano.ui.components.PromptCard
 import dev.shockstruck.gemininano.ui.components.SectionCard
 import dev.shockstruck.gemininano.ui.viewmodel.InvestigationViewModel
 
 /**
- * AICore Features in Stage 3b: the independent four-config Prompt probe. The full
- * multi-feature matrix stays an honest Stage 4 placeholder.
+ * AICore Features: the independent four-config Prompt card, the complete public GenAI
+ * feature matrix and the retained summarization status. Every row is its own probe.
  */
 @Composable
 fun AicoreFeaturesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
@@ -30,6 +34,9 @@ fun AicoreFeaturesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
         factory = viewModelFactory { initializer { InvestigationViewModel(graph) } },
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val summarization by graph.probeCache.probe.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) { viewModel.ensureFeaturesProbed() }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -48,18 +55,52 @@ fun AicoreFeaturesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             )
         }
         item {
-            SectionCard(
-                title = "Stage 4 — full multi-feature matrix",
-                subtitle = "Not implemented in this iteration; no guessed data is shown.",
-            ) {
-                Bullet("Independent probes for Rewriting, Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech Translation and Text to Speech.")
-                Bullet("Per-feature download eligibility and progress through the public ML Kit callbacks only.")
-                Bullet("No fabricated feature ids, model names or provisioning states.")
+            FeatureMatrixCard(
+                results = state.features,
+                busy = state.featureBusy,
+                downloading = state.featureDownload,
+                downloadText = state.featureDownloadText,
+                message = state.featureMessage,
+                onProbe = viewModel::probeFeatures,
+                onDownload = viewModel::downloadFeature,
+            )
+        }
+        item { SummarizationStatusCard(summarization) }
+    }
+}
+
+@Composable
+private fun SummarizationStatusCard(probe: SummarizationProbeResult?) {
+    SectionCard(
+        title = "Summarization — retained Private Notes path",
+        subtitle = "The original probe from the accepted download-button patch; not part of the new matrix.",
+    ) {
+        if (probe == null) {
+            Text("Probe on the Overview screen to record the summarization status.", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            Text(
+                text = "${probe.status.label} — ${probe.statusDetail}",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            probe.baseModelName?.let {
+                Text("Base model name: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            probe.failure?.let {
                 Text(
-                    text = "This screen will grow in Stage 4. The Prompt card above is complete and real.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "Error ${it.codeLabel}: ${it.exceptionClass} — ${it.message}",
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
+            if (probe.status == FeatureStatusKind.DOWNLOADABLE) {
+                Bullet("A one-time download is offered on Overview, and only from that explicit tap.")
+            }
         }
+        Bullet("Feature 622 is never used to derive any other feature's state.")
+        Text(
+            text = "The model-card probe and one-time download remain on the Overview screen; " +
+                "its inference test is the retained Private Notes test.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

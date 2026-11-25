@@ -8,7 +8,7 @@
       but the app keeps minSdk 24 and guards the AI path at runtime, so the library
       minSdk is overridden here.
     -->
-    <uses-sdk tools:overrideLibrary="com.google.mlkit.genai.summarization,com.google.mlkit.genai.prompt,com.google.mlkit.genai.common,dev.shockstruck.gemininano.core.genai" />
+    <uses-sdk tools:overrideLibrary="com.google.mlkit.genai.summarization,com.google.mlkit.genai.prompt,com.google.mlkit.genai.common,com.google.mlkit.genai.rewriting,com.google.mlkit.genai.proofreading,com.google.mlkit.genai.imagedescription,com.google.mlkit.genai.embedding,com.google.mlkit.genai.agent,com.google.mlkit.genai.speechrecognition,com.google.mlkit.genai.speechtranslation,com.google.mlkit.genai.texttospeech,dev.shockstruck.gemininano.core.genai" />
 
     <!-- Scoped package visibility. QUERY_ALL_PACKAGES is deliberately not requested. -->
     <queries>
