@@ -77,6 +77,15 @@ fun PrivateNotesScreen(viewModel: SummarizerViewModel = viewModel()) {
 
             Spacer(Modifier.height(16.dp))
 
+            // ── Model card: what AICore/PCS look like here + ML Kit status. ──
+            ModelCard(
+                state = state,
+                onDownload = viewModel::downloadModel,
+                onRecheck = viewModel::refreshRuntimeProbe,
+            )
+
+            Spacer(Modifier.height(16.dp))
+
             Text(
                 "Write or paste a note, then summarize it — the model runs on your phone.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -165,6 +174,73 @@ private fun Badge(text: String) {
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
+}
+
+/**
+ * Model card. Shows the AICore and Private Compute Services packages (present/absent and
+ * version) and the ML Kit feature status, with a "Download Gemini Nano" button that calls
+ * the public ML Kit downloadFeature() path and a "Re-check" action that re-probes.
+ */
+@Composable
+private fun ModelCard(
+    state: NotesUiState,
+    onDownload: () -> Unit,
+    onRecheck: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "On-device model",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(8.dp))
+            ModelInfoRow("AICore", state.aicoreStateLabel)
+            ModelInfoRow("Private Compute Services", state.pcsStateLabel)
+            ModelInfoRow("ML Kit feature status", state.featureStatus)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(onClick = onDownload, enabled = state.canDownloadModel) {
+                    Text("Download Gemini Nano")
+                }
+                TextButton(
+                    onClick = onRecheck,
+                    enabled = !state.isBusy && !state.probeInProgress,
+                ) {
+                    Text("Re-check")
+                }
+            }
+            if (state.probeInProgress) {
+                Spacer(Modifier.height(8.dp))
+                Text("Checking device…", style = MaterialTheme.typography.bodySmall)
+            }
+            if (state.downloadStatus.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(state.downloadStatus, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+/** One "label — value" line inside the model card. */
+@Composable
+private fun ModelInfoRow(label: String, value: String) {
+    Row(modifier = Modifier.padding(vertical = 2.dp)) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            value,
+            modifier = Modifier.weight(2f),
+            style = MaterialTheme.typography.bodyMedium,
         )
     }
 }

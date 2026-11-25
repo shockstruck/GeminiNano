@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.anandgaur.gemininano.data.NotesRepository
+import com.anandgaur.gemininano.data.describeGenAiError
+import com.google.mlkit.genai.common.FeatureStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +24,17 @@ data class NotesUiState(
     // Live download progress for the one-time model download.
     val downloadedBytes: Long = 0,
     val totalBytes: Long = 0,
+    // ── On-device model card: AICore / Private Compute Services / ML Kit status ──
+    val probeInProgress: Boolean = true,
+    val aicoreInstalled: Boolean = false,
+    val aicorePackage: String = "com.google.android.aicore",
+    val aicoreVersion: String = "",
+    val pcsInstalled: Boolean = false,
+    val pcsVersion: String = "",
+    val featureStatus: String = "Checking…",
+    val featureStatusCode: Int? = null,
+    /** Status line for the Download Gemini Nano and Re-check actions. */
+    val downloadStatus: String = "",
 ) {
     sealed interface Phase {
         /** Nothing happening — waiting for the user to type and tap Summarize. */
@@ -59,7 +72,25 @@ data class NotesUiState(
             fun mb(bytes: Long) = "%.0f MB".format(bytes / 1_000_000.0)
             return "$percent%  (${mb(downloadedBytes)} / ${mb(totalBytes)})"
         }
+
+    /** Model-card line for AICore, naming the package that was actually found. */
+    val aicoreStateLabel: String
+        get() = formatPackageState(aicoreInstalled, aicorePackage, aicoreVersion)
+
+    /** Model-card line for Private Compute Services. */
+    val pcsStateLabel: String
+        get() = formatPackageState(pcsInstalled, "com.google.android.as", pcsVersion)
+
+    /** The download button is usable only when idle and the model card is not probing. */
+    val canDownloadModel: Boolean get() = !isBusy && !probeInProgress
 }
+
+private fun formatPackageState(installed: Boolean, packageName: String, version: String): String =
+    if (installed) {
+        "$packageName present" + if (version.isNotBlank()) " (version $version)" else ""
+    } else {
+        "$packageName absent"
+    }
 
 /**
  * MVVM ViewModel. Holds UI state as a [StateFlow] and orchestrates the on-device
@@ -74,6 +105,103 @@ class SummarizerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _uiState = MutableStateFlow(NotesUiState())
     val uiState: StateFlow<NotesUiState> = _uiState.asStateFlow()
+
+    init {
+        // Populate the model card as soon as the screen opens.
+        refreshRuntimeProbe()
+    }
+
+    /** Re-run the AICore / PCS / ML Kit probe behind the model card. */
+    fun refreshRuntimeProbe() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(probeInProgress = true) }
+            applyProbe(repository.probeRuntime())
+        }
+    }
+
+    private fun applyProbe(probe: NotesRepository.RuntimeProbe) {
+        _uiState.update {
+            it.copy(
+                probeInProgress = false,
+                aicoreInstalled = probe.aicore.installed,
+                aicorePackage = probe.aicore.packageName,
+                aicoreVersion = probe.aicore.versionName.orEmpty(),
+                pcsInstalled = probe.pcs.installed,
+                pcsVersion = probe.pcs.versionName.orEmpty(),
+                featureStatus = probe.featureStatus,
+                featureStatusCode = probe.featureStatusCode,
+            )
+        }
+    }
+
+    /**
+     * "Download Gemini Nano": re-probe the device, then — when ML Kit reports the feature
+     * as DOWNLOADABLE — call downloadFeature() through the public ML Kit API. AICore and
+     * its Private Compute Services companion perform the actual download; this app only
+     * reports status and live progress. No hidden API is used and no permission is added.
+     */
+    fun downloadModel() {
+        val current = _uiState.value
+        if (current.isBusy || current.probeInProgress) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(probeInProgress = true, downloadStatus = "") }
+            val probe = repository.probeRuntime()
+            applyProbe(probe)
+
+            when (probe.featureStatusCode) {
+                FeatureStatus.DOWNLOADABLE -> {
+                    _uiState.update {
+                        it.copy(
+                            phase = NotesUiState.Phase.PreparingModel,
+                            downloadedBytes = 0,
+                            totalBytes = 0,
+                            downloadStatus = "Requested the one-time model download…",
+                        )
+                    }
+                    val result = repository.downloadModel { downloaded, total ->
+                        _uiState.update {
+                            it.copy(downloadedBytes = downloaded, totalBytes = total)
+                        }
+                    }
+                    if (result.isSuccess) {
+                        // Re-probe after completion so the card reflects the new status.
+                        applyProbe(repository.probeRuntime())
+                        _uiState.update {
+                            it.copy(
+                                phase = NotesUiState.Phase.Idle,
+                                downloadStatus =
+                                    "Download completed — feature status: ${it.featureStatus}",
+                            )
+                        }
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                phase = NotesUiState.Phase.Idle,
+                                downloadStatus =
+                                    "Download failed — ${describeGenAiError(result.exceptionOrNull())}",
+                            )
+                        }
+                    }
+                }
+
+                FeatureStatus.AVAILABLE -> _uiState.update {
+                    it.copy(downloadStatus = "Model is already AVAILABLE — nothing to download.")
+                }
+
+                FeatureStatus.DOWNLOADING -> _uiState.update {
+                    it.copy(downloadStatus = "A model download is already in progress (DOWNLOADING).")
+                }
+
+                else -> _uiState.update {
+                    it.copy(
+                        downloadStatus =
+                            "Cannot download the model — feature status: ${probe.featureStatus}",
+                    )
+                }
+            }
+        }
+    }
 
     /** Two-way binding for the text field. */
     fun onNoteChange(newText: String) {

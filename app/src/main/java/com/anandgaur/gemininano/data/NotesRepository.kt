@@ -1,6 +1,7 @@
 package com.anandgaur.gemininano.data
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import com.google.mlkit.genai.common.DownloadCallback
 import com.google.mlkit.genai.common.FeatureStatus
@@ -51,9 +52,42 @@ class NotesRepository(private val appContext: Context) {
         data class Unsupported(val reason: String) : NanoStatus
     }
 
+    /** One system package that the model card reports on (AICore or PCS). */
+    data class PackageProbe(
+        val packageName: String,
+        val installed: Boolean,
+        val versionName: String?,
+    )
+
+    /**
+     * Everything the model card shows: whether Android AICore and the Private Compute
+     * Services companion (which carries the model download for AICore) are installed,
+     * their versions, and the ML Kit feature status. Probe-only: nothing here binds to
+     * PCS/AICore or triggers a download.
+     */
+    data class RuntimeProbe(
+        val aicore: PackageProbe,
+        val pcs: PackageProbe,
+        val featureStatus: String,
+        /** Raw [FeatureStatus] constant, or null when it could not be read. */
+        val featureStatusCode: Int?,
+    )
+
     // We create the Summarizer lazily and keep a single instance for the app's lifetime.
     // It is closed in close() to release the native resources.
     private var summarizer: Summarizer? = null
+
+    private companion object {
+        // AICore has shipped under both package names; probe both, in this order.
+        val AICORE_PACKAGES = listOf(
+            "com.google.android.aicore",
+            "com.google.android.apps.aicore",
+        )
+
+        // Private Compute Services: AICore's system companion that carries model
+        // downloads. The app only reports whether it is installed; it never binds to it.
+        const val PCS_PACKAGE = "com.google.android.as"
+    }
 
     private fun getOrCreateSummarizer(): Summarizer {
         return summarizer ?: Summarization.getClient(
@@ -100,6 +134,50 @@ class NotesRepository(private val appContext: Context) {
                 "On-device AI isn't available on this device: ${e.message ?: "unknown reason"}"
             )
         }
+    }
+
+    /** Read one package's presence and version through PackageManager (see <queries>). */
+    private fun probePackage(packageName: String): PackageProbe = try {
+        val info = appContext.packageManager.getPackageInfo(packageName, 0)
+        PackageProbe(packageName, installed = true, versionName = info.versionName)
+    } catch (e: PackageManager.NameNotFoundException) {
+        PackageProbe(packageName, installed = false, versionName = null)
+    }
+
+    /**
+     * Probe the device for the model card. Reads only package metadata (allowed by the
+     * app's <queries> block) and asks ML Kit for its feature status — it never triggers
+     * a download and never binds to PCS or AICore directly.
+     */
+    suspend fun probeRuntime(): RuntimeProbe {
+        val aicoreProbes = AICORE_PACKAGES.map { probePackage(it) }
+        val aicore = aicoreProbes.firstOrNull { it.installed } ?: aicoreProbes.first()
+
+        val (statusLabel, statusCode) = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            "UNAVAILABLE (Android 8.0+ required)" to null
+        } else {
+            try {
+                val code = getOrCreateSummarizer().checkFeatureStatus().await()
+                featureStatusLabel(code) to code
+            } catch (e: Exception) {
+                "ERROR: ${describeGenAiError(e)}" to null
+            }
+        }
+
+        return RuntimeProbe(
+            aicore = aicore,
+            pcs = probePackage(PCS_PACKAGE),
+            featureStatus = statusLabel,
+            featureStatusCode = statusCode,
+        )
+    }
+
+    private fun featureStatusLabel(status: Int): String = when (status) {
+        FeatureStatus.AVAILABLE -> "AVAILABLE"
+        FeatureStatus.DOWNLOADABLE -> "DOWNLOADABLE"
+        FeatureStatus.DOWNLOADING -> "DOWNLOADING"
+        FeatureStatus.UNAVAILABLE -> "UNAVAILABLE"
+        else -> "UNKNOWN ($status)"
     }
 
     /**
@@ -156,4 +234,14 @@ class NotesRepository(private val appContext: Context) {
         summarizer?.close()
         summarizer = null
     }
+}
+
+/**
+ * One-line, UI-friendly description of an ML Kit GenAI failure, including its numeric
+ * error code (for example 606) when the exception carries one.
+ */
+fun describeGenAiError(e: Throwable?): String = when (e) {
+    null -> "unknown error"
+    is GenAiException -> "ML Kit error ${e.errorCode}: ${e.message ?: "no detail"}"
+    else -> e.message ?: e::class.java.simpleName
 }

@@ -16,6 +16,15 @@
     -->
     <uses-sdk tools:overrideLibrary="com.google.mlkit.genai.summarization,com.google.mlkit.genai.common" />
 
+    <!-- Package visibility (Android 11+) so the model card can report whether AICore and
+         its Private Compute Services companion are installed, and their versions. These
+         are metadata reads only: the app never binds to or calls either package. -->
+    <queries>
+        <package android:name="com.google.android.aicore" />
+        <package android:name="com.google.android.apps.aicore" />
+        <package android:name="com.google.android.as" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
