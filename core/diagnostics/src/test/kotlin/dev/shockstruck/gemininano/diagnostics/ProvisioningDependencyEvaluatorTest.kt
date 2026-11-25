@@ -514,6 +514,156 @@ class ProvisioningDependencyEvaluatorTest {
     }
 
     @Test
+    fun barePrefixAndOneExactNameBothZeroFail() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                mapOf(
+                                    "AicDataRelease__build_id_" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                    "AicDataRelease__build_id_aicore" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.FAILED, step.outcome)
+        assertTrue(step.summary.contains("AicDataRelease__build_id_<runtime suffix>"))
+        assertTrue(step.summary.contains("key composed at run time"))
+    }
+
+    @Test
+    fun barePrefixUnresolvedIsNotObservable() {
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                mapOf(
+                                    "AicDataRelease__build_id_" to
+                                        listOf(InstalledCodeDefaultValue.Unresolved),
+                                    "AicDataRelease__build_id_aicore" to
+                                        listOf(InstalledCodeDefaultValue.IntValue(0)),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("unresolved or mixed"))
+        assertTrue(step.summary.contains("<runtime suffix>"))
+    }
+
+    @Test
+    fun theSixtyNameCapAppliesToTheFailedAndPassedSummaries() {
+        val failingSites = (0 until 62).associate { index ->
+            "AicDataRelease__build_id_n%02d".format(index) to
+                listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(0))
+        }
+        val failed = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                failingSites,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val failedStep = failed.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.FAILED, failedStep.outcome)
+        assertTrue(failedStep.summary.contains("2 more (62 exact names total)"))
+        assertTrue(failedStep.summary.contains("AicDataRelease__build_id_n59"))
+        assertTrue(!failedStep.summary.contains("AicDataRelease__build_id_n61"))
+
+        val passingSites = (0 until 62).associate { index ->
+            "AicDataRelease__build_id_n%02d".format(index) to
+                listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(1))
+        }
+        val passed = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    read(
+                        PlatformPrincipals.AICORE,
+                        markers = listOf(
+                            flagWithSites(
+                                ProvisioningDependencyEvaluator.AICORE_BUILD_ID_MARKER,
+                                passingSites,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val passedStep = passed.step(DependencyStepId.AICORE_BUILD_ID)
+        assertEquals(DependencyStepOutcome.PASSED, passedStep.outcome)
+        assertTrue(passedStep.summary.contains("2 more (62 exact names total)"))
+        assertTrue(passedStep.summary.contains("AicDataRelease__build_id_n59"))
+        assertTrue(!passedStep.summary.contains("AicDataRelease__build_id_n61"))
+    }
+
+    @Test
+    fun truncationMakesBothFlagStepsNotObservable() {
+        val aicoreFacts = facts(
+            PlatformPrincipals.AICORE,
+            markers = listOf(buildId(listOf(InstalledCodeDefaultValue.IntValue(0)))),
+        ).copy(referencesTruncated = true)
+        val pcsFacts = facts(
+            PlatformPrincipals.PCS,
+            markers = listOf(
+                protectedDownload(listOf(InstalledCodeDefaultValue.BooleanValue(false))),
+            ),
+        ).copy(referencesTruncated = true)
+        val evaluation = evaluator.evaluate(
+            input(
+                installedCode = listOf(
+                    InstalledCodePackageEvidence(
+                        PlatformPrincipals.AICORE,
+                        InstalledCodeOutcome.Read(PlatformPrincipals.AICORE, aicoreFacts),
+                        3L,
+                    ),
+                    InstalledCodePackageEvidence(
+                        PlatformPrincipals.PCS,
+                        InstalledCodeOutcome.Read(PlatformPrincipals.PCS, pcsFacts),
+                        4L,
+                    ),
+                ),
+            ),
+        )
+
+        listOf(
+            DependencyStepId.AICORE_BUILD_ID,
+            DependencyStepId.PCS_PROTECTED_DOWNLOAD,
+        ).forEach { id ->
+            val step = evaluation.step(id)
+            assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+            assertTrue(step.summary.contains("truncated"))
+        }
+    }
+
+    @Test
     fun aMarkerAbsentFromTheInstalledCodeContradictsTheDumpAndNeverDecides() {
         val evaluation = evaluator.evaluate(
             input(
@@ -843,6 +993,23 @@ class ProvisioningDependencyEvaluatorTest {
         val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
         assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
         assertTrue(step.summary.contains("no certificate digest"))
+    }
+
+    @Test
+    fun aReverseElementWithNoPackageEntryIsNotObservable() {
+        val evaluation = evaluator.evaluate(
+            input(
+                manifests = associationManifests(
+                    aicoreElements = listOf(
+                        ManifestElementFacts(name = "component-access", packages = emptyList()),
+                    ),
+                ),
+            ),
+        )
+
+        val step = evaluation.step(DependencyStepId.PCS_ASSOCIATION)
+        assertEquals(DependencyStepOutcome.NOT_OBSERVABLE, step.outcome)
+        assertTrue(step.summary.contains("missing or unnamed"))
     }
 
     @Test

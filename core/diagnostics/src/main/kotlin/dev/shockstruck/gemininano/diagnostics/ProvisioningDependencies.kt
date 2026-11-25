@@ -454,6 +454,20 @@ class ProvisioningDependencyEvaluator {
         dumpEvidence: DependencyEvidence,
     ): DependencyStep {
         val evidence = mutableListOf(dumpEvidence)
+        if (facts.referencesTruncated) {
+            return DependencyStep(
+                id,
+                DependencyStepOutcome.NOT_OBSERVABLE,
+                "The installed-code read truncated its marker references for " +
+                    "${facts.packageName}, so this gate's default sites could be missing; no " +
+                    "default or absence is claimed from a truncated reference list.",
+                evidence + DependencyEvidence(
+                    statement = "referencesTruncated=true for ${facts.packageName}.",
+                    strength = DependencyEvidenceStrength.OBSERVED,
+                    source = "installed-code reader",
+                ),
+            )
+        }
         val markerFacts = facts.marker(marker)
         if (markerFacts == null) {
             return DependencyStep(
@@ -611,7 +625,7 @@ class ProvisioningDependencyEvaluator {
                 strength = DependencyEvidenceStrength.INFERRED,
                 source = "installed-code reader and permission matrix",
             )
-            val names = established.joinToString(", ") { it.first }
+            val names = describeEstablishedNames(established.map { it.first })
             return if (disabling) {
                 DependencyStep(
                     id,
@@ -839,9 +853,20 @@ class ProvisioningDependencyEvaluator {
                 evidence,
             )
         }
-        val reverseEntries = aicoreManifest.associationElements.flatMap { element -> element.packages }
-        if (reverseEntries.isNotEmpty()) {
-            val pcsEntries = reverseEntries.filter { it.name == PlatformPrincipals.PCS }
+        val reverseElements = aicoreManifest.associationElements
+        if (reverseElements.isNotEmpty()) {
+            if (!aicoreManifest.associationNamesComplete) {
+                return DependencyStep(
+                    id,
+                    DependencyStepOutcome.NOT_OBSERVABLE,
+                    "AICore's own manifest declares an association policy but its package " +
+                        "entries are missing or unnamed, so the reverse check cannot be read.",
+                    evidence,
+                )
+            }
+            val pcsEntries = reverseElements
+                .flatMap { element -> element.packages }
+                .filter { it.name == PlatformPrincipals.PCS }
             if (pcsEntries.isEmpty()) {
                 return DependencyStep(
                     id,
@@ -913,7 +938,7 @@ class ProvisioningDependencyEvaluator {
             DependencyStepOutcome.PASSED,
             "The installed PCS policy names ${aicore.packageName} with a digest equal to the " +
                 "installed AICore signer, and AICore's own complete manifest " +
-                (if (reverseEntries.isEmpty()) {
+                (if (reverseElements.isEmpty()) {
                     "declares no policy; the reverse check has no entry to fail."
                 } else {
                     "names PCS with a digest equal to the installed PCS signer."
@@ -965,7 +990,7 @@ class ProvisioningDependencyEvaluator {
             } else {
                 exact.values.joinToString(", ") { describeDefault(it) }
             }
-            "${exact.name} = $values"
+            "${displayExactName(exact.name)} = $values"
         }
         val omitted = names.size - shown.size
         val count = if (omitted > 0) {
@@ -975,6 +1000,21 @@ class ProvisioningDependencyEvaluator {
         }
         return rendered + count
     }
+
+    private fun describeEstablishedNames(names: List<String>): String {
+        val shown = names.take(MAX_DEFAULT_NAMES_IN_REPORT)
+        val rendered = shown.joinToString(", ") { displayExactName(it) }
+        val omitted = names.size - shown.size
+        return if (omitted > 0) "$rendered; $omitted more (${names.size} exact names total)" else rendered
+    }
+
+    /** The bare prefix is a run-time key: the installed code appends a suffix. */
+    private fun displayExactName(name: String): String =
+        if (name == AICORE_BUILD_ID_MARKER) {
+            "$AICORE_BUILD_ID_MARKER<runtime suffix> (key composed at run time)"
+        } else {
+            name
+        }
 
     private fun normalizeDigest(value: String): String =
         value.replace(":", "").trim().lowercase()

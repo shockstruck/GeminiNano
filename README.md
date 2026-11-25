@@ -118,10 +118,15 @@ updated.
    it, and the permission observed denied. A flag default is evaluated per exact flag name:
    every default site of that name must carry the same single literal; a flag passed with no
    parameter after it is shown as "no following argument" and is not a default site; an
-   unresolved or mixed site leaves the step not observable. That the denied permission makes
-   the flag read its default is exported as inferred, because the check is found in the
-   package, not on each flag's read path. A marker with no referencing method is "in the
-   string table, loaded by no instruction". A string-table match is not proof the code uses
+   unresolved or mixed site leaves the step not observable. A literal boxed with
+   `Integer.valueOf`/`Boolean.valueOf` or read from `Boolean.TRUE`/`Boolean.FALSE` counts as
+   the literal it boxes when the parameter after the flag is `Integer`, `Boolean` or
+   `Object`; a bare prefix used as the receiver of `String.concat` whose result flows
+   straight into the next call is the run-time key (`AicDataRelease__build_id_<runtime
+   suffix>`), not a separate default. A truncated reference list leaves a flag step not
+   observable. That the denied permission makes the flag read its default is exported as
+   inferred, because the check is found in the package, not on each flag's read path. A
+   marker with no referencing method is "in the string table, loaded by no instruction". A string-table match is not proof the code uses
    it, and an installed-code fact that contradicts the dump is exported as a contradiction.
    The association step compares AICore's signer only with the policy entry named for AICore,
    needs AICore's own complete manifest (no policy, or a PCS entry matching PCS's signer), and
