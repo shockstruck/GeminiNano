@@ -630,6 +630,56 @@ class ProvisioningClassifierTest {
         )
     }
 
+    // 401 and 403 count only as an HTTP or status code, never as a bare number.
+
+    @Test
+    fun aBare403InACloudClauseIsNotARemoteRejection() {
+        val result = messageResult("cloud feature 403 is pending")
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        assertTrue(
+            result.candidates.none {
+                it.failureClass == ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION
+            },
+        )
+    }
+
+    @Test
+    fun aBareStatusNumberDoesNotCountEvenBesideARemoteSource() {
+        val result = messageResult("server returned 403")
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        assertTrue(
+            result.candidates.none {
+                it.failureClass == ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION
+            },
+        )
+    }
+
+    @Test
+    fun everyHttpOrStatusCodeFormSelectsRemoteRejection() {
+        listOf("HTTP 403", "HTTP/1.1 403", "status 403", "status code 403").forEach { form ->
+            assertSelected(
+                ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+                "server returned $form",
+            )
+        }
+    }
+
+    @Test
+    fun aServerHttp403MessageSelectsRemoteRejection() {
+        assertSelected(
+            ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+            "server returned HTTP 403",
+        )
+    }
+
+    @Test
+    fun aBackendStatusCode401MessageSelectsRemoteRejection() {
+        assertSelected(
+            ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+            "backend status code 401",
+        )
+    }
+
     @Test
     fun theWrapperWithoutErrorCodePrefixIsAlsoStripped() {
         val text = "AICore failed with error type 3-PREPARATION_ERROR and " +
@@ -667,6 +717,44 @@ class ProvisioningClassifierTest {
             )
             assertTrue(result.evidence.any { it.statement.contains("Feature $featureId") })
         }
+    }
+
+    // Restored message coverage the 0.6.0 rework replaced.
+
+    @Test
+    fun aBackendEligibilityMessageSelectsRemoteRejection() {
+        assertSelected(
+            ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION,
+            "Backend response: device is not eligible for this provisioning cohort",
+        )
+    }
+
+    @Test
+    fun aLocalEligibilityMessageIsOnlyACandidate() {
+        val result = messageResult("Device is not eligible for this provisioning cohort")
+        assertEquals(ProvisioningFailureClass.INDETERMINATE, result.result)
+        val candidate = result.candidates.first {
+            it.failureClass == ProvisioningFailureClass.REMOTE_PROVISIONING_REJECTION
+        }
+        assertTrue(candidate.why.contains("local PCS refusal"))
+    }
+
+    @Test
+    fun registrationCompleteWithADownloadFailureIsIndeterminate() {
+        assertIndeterminate("registration complete, download failed")
+    }
+
+    @Test
+    fun manifestReadWithoutErrorIsIndeterminate() {
+        assertIndeterminate("manifest read without error")
+    }
+
+    @Test
+    fun theMlKitWrapperWithNpuAccessDeniedSelectsNpuRestrictions() {
+        assertSelected(
+            ProvisioningFailureClass.NPU_ACCESS_RESTRICTIONS,
+            wrapped("NPU: access denied"),
+        )
     }
 
     // -- Item 4: a successful generation conflicts with a selected class --------------

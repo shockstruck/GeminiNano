@@ -213,7 +213,9 @@ data class ClassifierInput(
  *   then `AICore failed with error type ... and error code ...:`) is removed, names the
  *   missing configuration, an NPU access denial, a remote rejection from a whole-word
  *   server/remote/backend/cloud source, or model/feature registration. A negated
- *   failure word ("not denied", "not rejected", "not missing") does not count;
+ *   failure word ("not denied", "not rejected", "not missing") does not count, and a 401
+ *   or 403 counts only as an HTTP or status code (`HTTP 403`, `HTTP/1.1 403`,
+ *   `status 403`, `status code 403`), never as a bare number;
  * - the installed PCS gRPC service is declared but not effectively enabled
  *   (initialization), or declared but not exported (authorization, unless PCS and
  *   AICore share a UID);
@@ -1205,7 +1207,10 @@ class ProvisioningFailureClassifier {
     private fun isEligibilityNegative(text: String): Boolean =
         text.contains("not eligible") || text.contains("ineligible")
 
-    /** Splits on sentence punctuation and conjunctions, never on ':' so "NPU: denied" stays whole. */
+    /**
+     * Splits on sentence punctuation and conjunctions, never on ':' so "NPU: denied" stays
+     * whole, and never inside a digit-dot-digit version such as "HTTP/1.1".
+     */
     private fun clausesOf(text: String): List<String> =
         text.lowercase()
             .split(CLAUSE_SPLIT)
@@ -1430,10 +1435,18 @@ class ProvisioningFailureClassifier {
 
         val FORBIDDEN_PATTERN = Regex("""\bforbidden\b""", RegexOption.IGNORE_CASE)
 
-        val HTTP_AUTH_PATTERN = Regex("""\b(?:401|403)\b""")
+        /**
+         * A 401 or 403 counts only as an HTTP or status code: `HTTP 403`, `HTTP/1.1 403`,
+         * `status 403` and `status code 403` match; a bare number does not, because an
+         * unrelated number in a clause is not an authentication or authorization failure.
+         */
+        val HTTP_AUTH_PATTERN = Regex(
+            """\b(?:http(?:/\d(?:\.\d+)?)?|status(?:\s+code)?)\s*:?\s*(?:401|403)\b""",
+            RegexOption.IGNORE_CASE,
+        )
 
         val CLAUSE_SPLIT = Regex(
-            """[;,.!?]|\bbut\b|\bwhile\b|\balthough\b|\bhowever\b|\bthen\b""",
+            """[;,!?]|(?<!\d)\.|\.(?!\d)|\bbut\b|\bwhile\b|\balthough\b|\bhowever\b|\bthen\b""",
         )
 
         val NAMED_PERMISSIONS = listOf(
