@@ -1,9 +1,10 @@
 # Gemini Nano Manager
 
 A rootless diagnostic and management app for Android AICore and the public ML Kit GenAI
-surfaces on GrapheneOS. This is the Stage 3b provisioning-investigation iteration: it
-reports what an ordinary sandboxed app can actually observe, probes the public Prompt API
-independently of summarization, keeps the original on-device summarization, and does not
+surfaces on GrapheneOS. The Stage 4 iteration is feature-complete against the project's
+definition: it reports what an ordinary sandboxed app can actually observe, probes every
+public ML Kit GenAI capability independently, offers only user-triggered downloads, runs a
+fixed-input inference matrix, keeps the original on-device summarization, and does not
 pretend to provision anything it cannot.
 
 Derived from the public [anandgaur22/GeminiNano](https://github.com/anandgaur22/GeminiNano)
@@ -15,11 +16,11 @@ demo. Internal experimental derivative; not affiliated with Google.
 | --- | --- |
 | Overview | Implemented: AICore/PCS presence and version, real summarization probe, most recent failure, decision-tree recommendation, retained summarization test |
 | System Components | Implemented: version, installer, signing SHA-256, SDK levels, requested permissions, observable grants, declared/exported components, metadata, probed intent actions |
-| AICore Features | Implemented: independent Prompt probe over the four `ModelConfig` combinations (`STABLE/FAST`, `STABLE/FULL`, `PREVIEW/FAST`, `PREVIEW/FULL`), status, feature id, error class/code/message, base model name only when returned, latency, and a download button only when ML Kit says DOWNLOADABLE |
+| AICore Features | Implemented: independent Prompt probe over the four `ModelConfig` combinations (`STABLE/FAST`, `STABLE/FULL`, `PREVIEW/FAST`, `PREVIEW/FULL`) plus the full public GenAI matrix — Rewriting, Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech Translation and Text to Speech. Each row is an isolated probe with status, feature id, error class/code/message, base model name or signature only when returned, latency, and a download button only when ML Kit says DOWNLOADABLE. The retained summarization status is shown separately |
 | Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, safe `bindService` outcomes for the six fixed services, and a one-tap `ACTION_APPLICATION_PREFERENCES` check |
-| Model Manager | Stage 4 placeholder (planned scope shown, no guessed data) |
-| Provisioning Diagnostics | Implemented: the four evidence blocks (matrix, Prompt, PCS surface/bind, decision) plus the exact feature-622 label |
-| Offline Inference | Stage 4 placeholder |
+| Model Manager | Implemented: per-feature observed status, explicit download only when DOWNLOADABLE, progress from the public callbacks, retry after failure, no catalog, no automatic download, no invented cancel |
+| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, decision), the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report |
+| Offline Inference | Implemented: one short fixed-input inference per AVAILABLE feature with exact failures and latency; the user must disable connectivity externally and no offline success is claimed from this app alone |
 | Privacy | Implemented |
 | Diagnostic Logs | Implemented: bounded local event bus, search/filter, copy, JSON and text export through SAF, redaction |
 | Settings | Implemented: theme, SAF export directory, log verbosity, reset probes, provenance |
@@ -52,7 +53,7 @@ The APK is written to
 Modules: `:app`, `:core:model` (pure Kotlin), `:core:android`, `:core:genai` (the only
 module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testing`.
 
-## What the Stage 3b screens observe
+## What the screens observe
 
 - **Permission matrix.** PCS (`com.google.android.as.oss`), ASI (`com.google.android.as`),
   AICore (`com.google.android.aicore`), legacy AICore (`com.google.android.apps.aicore`)
@@ -76,6 +77,29 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   transaction, builds no AIDL stub, uses no reflection and calls no service method.
   Job-bound services are static facts only. `ACTION_APPLICATION_PREFERENCES` is resolved
   and opened only on a user tap.
+- **Feature matrix.** Eight independent clients over the public SDKs: Rewriting,
+  Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech
+  Translation and Text to Speech. Each probe records only what its own client returned;
+  one failure never marks another feature. Speech uses file/fixed-buffer input only, so
+  no `RECORD_AUDIO` is requested. Embedding reports the model signature and vector
+  dimension the API returned. Agent runs over the public `Agent`/`AgentRunner` API with
+  app functions disabled.
+- **Model Manager.** Downloads start only from an explicit tap on a row ML Kit reports
+  as DOWNLOADABLE. Progress is the SDK callback's byte count; the only "total" shown is
+  the one `onDownloadStarted`/`DownloadStarted` reported. A failed download keeps its
+  Retry button. No catalog, no size estimate, no automatic download and no invented
+  cancel operation.
+- **Offline Inference.** One short fixed-input inference per AVAILABLE feature, with
+  latency and the exact failure. Rewriting/Proofreading use fixed text; Image Description
+  uses a generated 96×96 bitmap; Embedding a fixed sentence; Agent a one-turn "Reply OK";
+  speech recognition/translation a fixed 1-second 16 kHz mono PCM16 silence buffer or WAV
+  file; Text to Speech a fixed sentence with the first supported en-US voice. The screen
+  tells the user to disable connectivity externally; it never toggles a radio.
+- **Run Full Diagnostics.** One explicit action re-inspects packages, rebuilds the
+  permission matrix, probes every GenAI feature status, the four Prompt configs and the
+  retained summarization probe, records the PCS surface, includes any bind results the
+  user already ran, and builds JSON and text reports through the existing SAF export
+  path. It performs no download and no bind.
 - **Decision line.** Built from the evidence above: PCS PCC state, Prompt 606/AVAILABLE
   results and the gRPC bind outcome. The label is always
   `622 — AICore AIDL constant SAPI_SUMMARIZATION_EN_2 (decompiled source, not a model); model unknown.`

@@ -74,6 +74,13 @@ class DecisionTree {
                 detail = "The probe returned an unrecognised status. Check Diagnostic Logs for the raw value.",
             )
 
+            FeatureStatusKind.NOT_IN_PUBLIC_API -> Recommendation(
+                kind = RecommendationKind.UNKNOWN,
+                headline = "This capability has no usable public API",
+                detail = "The published artifact exposes no public surface this app may call. " +
+                    "No status, download or inference is claimed for it.",
+            )
+
             FeatureStatusKind.PROBE_ERROR -> error("handled above")
         }
     }

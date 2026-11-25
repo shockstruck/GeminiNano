@@ -34,19 +34,42 @@ class LogExportManager(
         return "gemini-nano-diagnostics-${fileTimestamp()}.$extension"
     }
 
+    fun fullReportFileName(json: Boolean): String {
+        val extension = if (json) "json" else "txt"
+        return "gemini-nano-full-diagnostics-${fileTimestamp()}.$extension"
+    }
+
     fun mimeType(json: Boolean): String =
         if (json) "application/json" else "text/plain"
 
     /** Writes to a document URI returned by CreateDocument. */
-    fun writeToDocument(uri: Uri, json: Boolean): Result<Unit> = runCatching {
+    fun writeToDocument(uri: Uri, json: Boolean): Result<Unit> {
         val payload = if (json) json() else text()
+        return writePayloadToDocument(uri, payload)
+    }
+
+    /** Writes an already-built payload to a document URI returned by CreateDocument. */
+    fun writePayloadToDocument(uri: Uri, payload: String): Result<Unit> = runCatching {
         context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
             output.write(payload.toByteArray(Charsets.UTF_8))
         } ?: error("The chosen document could not be opened for writing.")
     }
 
     /** Writes a new file into a persisted SAF directory tree. */
-    fun writeToDirectory(treeUri: Uri, json: Boolean): Result<Uri> = runCatching {
+    fun writeToDirectory(treeUri: Uri, json: Boolean): Result<Uri> =
+        writePayloadToDirectory(
+            treeUri = treeUri,
+            fileName = suggestedFileName(json),
+            mimeType = mimeType(json),
+            payload = if (json) json() else text(),
+        )
+
+    fun writePayloadToDirectory(
+        treeUri: Uri,
+        fileName: String,
+        mimeType: String,
+        payload: String,
+    ): Result<Uri> = runCatching {
         val resolver = context.contentResolver
         val parent = DocumentsContract.buildDocumentUriUsingTree(
             treeUri,
@@ -55,10 +78,9 @@ class LogExportManager(
         val document = DocumentsContract.createDocument(
             resolver,
             parent,
-            mimeType(json),
-            suggestedFileName(json),
+            mimeType,
+            fileName,
         ) ?: error("The chosen directory did not accept a new document.")
-        val payload = if (json) json() else text()
         resolver.openOutputStream(document, "wt")?.use { output ->
             output.write(payload.toByteArray(Charsets.UTF_8))
         } ?: error("The new document could not be opened for writing.")

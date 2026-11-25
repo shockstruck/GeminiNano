@@ -39,8 +39,9 @@ import androidx.compose.ui.unit.dp
 import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.ui.screens.AicoreFeaturesScreen
 import dev.shockstruck.gemininano.ui.screens.DiagnosticLogsScreen
+import dev.shockstruck.gemininano.ui.screens.ModelManagerScreen
+import dev.shockstruck.gemininano.ui.screens.OfflineInferenceScreen
 import dev.shockstruck.gemininano.ui.screens.OverviewScreen
-import dev.shockstruck.gemininano.ui.screens.PlaceholderScreens
 import dev.shockstruck.gemininano.ui.screens.PrivateComputeServicesScreen
 import dev.shockstruck.gemininano.ui.screens.PrivacyScreen
 import dev.shockstruck.gemininano.ui.screens.ProvisioningDiagnosticsScreen
@@ -176,9 +177,8 @@ private fun SectionHost(section: Section, graph: AppGraph, modifier: Modifier) {
         Section.AICORE_FEATURES -> AicoreFeaturesScreen(graph, modifier)
         Section.PRIVATE_COMPUTE_SERVICES -> PrivateComputeServicesScreen(graph, modifier)
         Section.PROVISIONING_DIAGNOSTICS -> ProvisioningDiagnosticsScreen(graph, modifier)
-        Section.MODEL_MANAGER,
-        Section.OFFLINE_INFERENCE,
-        -> PlaceholderScreens(section = section, modifier = modifier)
+        Section.MODEL_MANAGER -> ModelManagerScreen(graph, modifier)
+        Section.OFFLINE_INFERENCE -> OfflineInferenceScreen(graph, modifier)
 
         Section.PRIVACY -> PrivacyScreen(graph, modifier)
         Section.DIAGNOSTIC_LOGS -> DiagnosticLogsScreen(graph, modifier)

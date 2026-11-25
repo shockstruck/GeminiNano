@@ -7,8 +7,10 @@ import dev.shockstruck.gemininano.core.android.PackageCatalog
 import dev.shockstruck.gemininano.core.android.PcsSurfaceInspector
 import dev.shockstruck.gemininano.core.android.PermissionMatrixProbe
 import dev.shockstruck.gemininano.core.android.SafeBindProbe
+import dev.shockstruck.gemininano.core.genai.MlKitFeatureSuite
 import dev.shockstruck.gemininano.core.genai.MlKitPromptProbe
 import dev.shockstruck.gemininano.core.genai.MlKitSummarizationProbe
+import dev.shockstruck.gemininano.core.genai.UnavailableFeatureSuite
 import dev.shockstruck.gemininano.core.genai.UnavailablePromptProbe
 import dev.shockstruck.gemininano.core.genai.UnavailableSummarizationProbe
 import dev.shockstruck.gemininano.data.LogExportManager
@@ -65,6 +67,13 @@ class AppGraph(context: Context) {
             MlKitPromptProbe()
         } else {
             UnavailablePromptProbe()
+        }
+
+    val featureSuite: dev.shockstruck.gemininano.model.GenAiFeatureSuite =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            MlKitFeatureSuite(appContext)
+        } else {
+            UnavailableFeatureSuite()
         }
 
     val probeCache = ProbeCache()
