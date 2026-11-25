@@ -172,7 +172,7 @@ fun SettingsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
                 Bullet("Derived from the public anandgaur22/GeminiNano demo, which ships no licence file; this is an internal experimental derivative.")
                 Bullet("No Google APKs, model binaries, keys or restricted artifacts are included in this app or its repository.")
                 Bullet("Not affiliated with or endorsed by Google. Android AICore, Private Compute Services and Gemini Nano are Google components.")
-                Bullet("Stage 3b: AICore Features, Private Compute Services and Provisioning Diagnostics are implemented. Model Manager and Offline Inference remain Stage 4 placeholders.")
+                Bullet("0.4.0: all ten sections are implemented — Overview, System Components, AICore Features, Private Compute Services, Model Manager, Provisioning Diagnostics, Offline Inference, Privacy, Diagnostic Logs and Settings.")
             }
         }
     }
