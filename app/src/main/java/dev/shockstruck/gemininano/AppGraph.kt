@@ -3,6 +3,8 @@ package dev.shockstruck.gemininano
 import android.content.Context
 import android.os.Build
 import dev.shockstruck.gemininano.core.android.AndroidPackageInspector
+import dev.shockstruck.gemininano.core.android.AppUserFactsSource
+import dev.shockstruck.gemininano.core.android.InstalledCodePackageReader
 import dev.shockstruck.gemininano.core.android.InstalledManifestReader
 import dev.shockstruck.gemininano.core.android.PackageCatalog
 import dev.shockstruck.gemininano.core.android.PcsActivityLauncher
@@ -24,7 +26,9 @@ import dev.shockstruck.gemininano.diagnostics.BoundedProbeRunner
 import dev.shockstruck.gemininano.diagnostics.DecisionTree
 import dev.shockstruck.gemininano.diagnostics.DiagnosticBus
 import dev.shockstruck.gemininano.diagnostics.ExportMetadata
+import dev.shockstruck.gemininano.diagnostics.InstalledCodeEvidenceCollector
 import dev.shockstruck.gemininano.diagnostics.OverviewPresenter
+import dev.shockstruck.gemininano.diagnostics.ProvisioningDependencyEvaluator
 import dev.shockstruck.gemininano.diagnostics.ProvisioningDiagnosticsPresenter
 import dev.shockstruck.gemininano.model.BuildFacts
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
@@ -57,6 +61,24 @@ class AppGraph(context: Context) {
 
     /** Reads the installed APK manifests of AICore, PCS and ASI; blocking, off the main thread. */
     val manifestReader = InstalledManifestReader(appContext)
+
+    /** Reads the installed AICore and PCS dex code as narrow facts; blocking, off the main thread. */
+    val installedCodeReader = InstalledCodePackageReader(appContext)
+
+    /**
+     * Collects one installed-code read per package, turning any failure into that
+     * package's own outcome, and records how long each package took.
+     */
+    val installedCodeCollector = InstalledCodeEvidenceCollector(
+        read = installedCodeReader::read,
+        elapsedClock = { android.os.SystemClock.elapsedRealtime() },
+    )
+
+    /** Whether this app runs in the system (owner) user; public UserManager call only. */
+    val appUserFacts = AppUserFactsSource(appContext)
+
+    /** Pure ordered evaluation of the provisioning chain Stage 9 traced. */
+    val provisioningDependencies = ProvisioningDependencyEvaluator()
 
     val permissionMatrixProbe = PermissionMatrixProbe(
         provider = packageFactsProvider,

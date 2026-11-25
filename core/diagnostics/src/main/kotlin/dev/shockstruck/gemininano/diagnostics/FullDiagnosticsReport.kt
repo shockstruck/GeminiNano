@@ -1,15 +1,23 @@
 package dev.shockstruck.gemininano.diagnostics
 
+import dev.shockstruck.gemininano.model.AppUserFacts
 import dev.shockstruck.gemininano.model.DiagnosticEvent
 import dev.shockstruck.gemininano.model.FeatureMatrixFormatting
 import dev.shockstruck.gemininano.model.FeatureProbeResult
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFeature
+import dev.shockstruck.gemininano.model.InstalledCodeDefaultValue
+import dev.shockstruck.gemininano.model.InstalledCodeMarkerFacts
+import dev.shockstruck.gemininano.model.InstalledCodeOutcome
+import dev.shockstruck.gemininano.model.InstalledCodePackageEvidence
+import dev.shockstruck.gemininano.model.InstalledCodePackageFacts
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
+import dev.shockstruck.gemininano.model.PcsBindHistoryEntry
 import dev.shockstruck.gemininano.model.PcsBindProvenance
+import dev.shockstruck.gemininano.model.PcsBindReport
 import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PcsBindRow
 import dev.shockstruck.gemininano.model.PcsSurface
@@ -53,6 +61,17 @@ data class FullDiagnosticsInput(
     val manifests: List<ManifestEvidenceSnapshot> = emptyList(),
     /** The pure classifier result computed from exactly the evidence in this report. */
     val classification: ProvisioningClassification? = null,
+    /**
+     * Per-package installed-code evidence, read once inside Run Full Diagnostics. Only the
+     * `InstalledCodePackageFacts` type is exported; no bytecode, asset or model byte is.
+     */
+    val installedCode: List<InstalledCodePackageEvidence> = emptyList(),
+    /** Whether this app runs in the system (owner) user, as `UserManager` reported it. */
+    val appUser: AppUserFacts? = null,
+    /** The ordered evaluation that names the first provisioning dependency shown failing. */
+    val dependencies: ProvisioningDependencyEvaluation? = null,
+    /** Every stored bind observation, oldest first; at most five per component. */
+    val bindHistory: List<PcsBindHistoryEntry> = emptyList(),
 )
 
 data class FullDiagnosticsReport(
@@ -124,6 +143,14 @@ class FullDiagnosticsReportBuilder {
         out.append(array(input.launchResults) { launchJson(it) }).append(",\n")
         out.append("  \"manifests\": ")
         out.append(array(input.manifests) { manifestJson(it) }).append(",\n")
+        out.append("  \"appUser\": ")
+        out.append(appUserJson(input.appUser)).append(",\n")
+        out.append("  \"installedCode\": ")
+        out.append(installedCodeJson(input.installedCode)).append(",\n")
+        out.append("  \"provisioningDependencies\": ")
+        out.append(provisioningDependenciesJson(input.dependencies)).append(",\n")
+        out.append("  \"pcsBindHistory\": ")
+        out.append(bindHistoryJson(input.bindHistory, input.bindHistoryNote)).append(",\n")
         out.append("  \"provisioningClassifier\": ")
         out.append(classificationJson(input.classification)).append(",\n")
         out.append("  \"untestedOperations\": ")
@@ -342,6 +369,27 @@ class FullDiagnosticsReportBuilder {
         }
 
         out.appendLine()
+        out.append("== Stored PCS bind history (at most five per component) ==\n")
+        if (input.bindHistory.isEmpty()) {
+            out.append("no stored observation\n")
+        } else {
+            PcsBindReport.historyByComponent(input.bindHistory).forEach { (componentName, entries) ->
+                out.append(componentName).append('\n')
+                entries.forEach { entry ->
+                    out.append("  ").append(DiagnosticFormatting.formatTimestamp(entry.observedAtEpochMillis))
+                        .append(" | app=").append(entry.appVersionName)
+                        .append(" (").append(entry.appVersionCode).append(')')
+                        .append(" | pcsVersionCode=")
+                        .append(entry.pcsVersionCode?.toString() ?: "unknown")
+                        .append(" | outcome=").append(entry.result.outcome.label)
+                        .append(" | binding: ").append(PcsBindReport.bindingFact(entry.result))
+                        .append(" | unbindCalls=").append(entry.result.unbindCalls)
+                        .append(" | elapsed=").append(entry.result.elapsedMillis).append("ms\n")
+                }
+            }
+        }
+
+        out.appendLine()
         out.append("== Provisioning failure classifier ==\n")
         val classification = input.classification
         if (classification == null) {
@@ -463,6 +511,33 @@ class FullDiagnosticsReportBuilder {
                 }
             }
             out.append("A manifest declaration is not a runtime PCC UID, and a declared association policy is not proof of enforcement; no signer digest is compared because no public-source digest set is bundled.\n")
+        }
+
+        out.appendLine()
+        out.append("== Installed code facts (static, read-only) ==\n")
+        if (input.installedCode.isEmpty()) {
+            out.append("not read\n")
+        } else {
+            input.installedCode.forEach { evidence -> appendInstalledCodeText(out, evidence) }
+            out.append("Note: only the installed-code facts type is exported. Reader failure messages can name an APK file or a ZIP entry (the facts already carry the dex entry names) but cannot contain a decoded DEX string: every format error uses numeric offsets, indices, opcodes or fixed labels.\n")
+        }
+
+        out.appendLine()
+        out.append("== First failing provisioning dependency ==\n")
+        out.append("App user: ").append(input.appUser?.label ?: "not read").append('\n')
+        val dependencies = input.dependencies
+        if (dependencies == null) {
+            out.append("not evaluated\n")
+        } else {
+            out.append("Result: ").append(dependencies.resultLabel).append('\n')
+            out.append("Summary: ").append(dependencies.summary).append('\n')
+            dependencies.steps.forEachIndexed { index, step ->
+                out.append(index + 1).append(". [").append(step.outcome.label).append("] ")
+                    .append(step.id.label).append(" — ").append(step.summary).append('\n')
+                step.evidence.forEach { evidence ->
+                    out.append("   ").append(evidence.label).append('\n')
+                }
+            }
         }
 
         out.appendLine()
@@ -1055,6 +1130,277 @@ class FullDiagnosticsReportBuilder {
             "}"
     }
 
+    private fun appUserJson(appUser: AppUserFacts?): String {
+        if (appUser == null) return "null"
+        return "{" +
+            "\"isSystemUser\": " + (appUser.isSystemUser?.toString() ?: "null") + ", " +
+            "\"label\": " + quote(appUser.label) + ", " +
+            "\"readError\": " + (appUser.readErrorLabel?.let { quote(it) } ?: "null") +
+            "}"
+    }
+
+    private fun installedCodeJson(evidence: List<InstalledCodePackageEvidence>): String {
+        val packages = array(evidence) { item ->
+            val fields = mutableListOf(
+                "\"requestedPackage\": " + quote(item.requestedPackage),
+                "\"outcome\": " + quote(item.outcomeLabel),
+                "\"elapsedMillis\": " + item.elapsedMillis,
+            )
+            when (val outcome = item.outcome) {
+                is InstalledCodeOutcome.Read -> fields += installedCodeFactsJson(outcome.facts)
+                is InstalledCodeOutcome.Partial -> fields += installedCodeFactsJson(outcome.facts)
+                is InstalledCodeOutcome.NotVisible -> Unit
+                is InstalledCodeOutcome.ReadError -> {
+                    fields += "\"errorClass\": " + quote(outcome.errorClass)
+                    fields += "\"message\": " + quote(outcome.message)
+                }
+
+                is InstalledCodeOutcome.TooLarge -> {
+                    fields += "\"detail\": " + quote(outcome.detail)
+                    fields += "\"versionCode\": " + (outcome.versionCode?.toString() ?: "null")
+                    fields += "\"apkSha256\": " + array(outcome.apkSha256) {
+                        "{" +
+                            "\"label\": " + quote(it.apk.label) + ", " +
+                            "\"kind\": " + quote(it.apk.kind.name) + ", " +
+                            "\"sha256\": " + quote(it.sha256) +
+                            "}"
+                    }
+                }
+            }
+            "{" + fields.joinToString(", ") + "}"
+        }
+        return "{" +
+            "\"note\": " + quote(INSTALLED_CODE_EXPORT_NOTE) + ", " +
+            "\"packages\": " + packages +
+            "}"
+    }
+
+    private fun installedCodeFactsJson(facts: InstalledCodePackageFacts): List<String> = listOf(
+        "\"complete\": " + facts.complete,
+        "\"versionCode\": " + facts.versionCode,
+        "\"referencesTruncated\": " + facts.referencesTruncated,
+        "\"apks\": " + array(facts.apks) {
+            "{" +
+                "\"label\": " + quote(it.id.label) + ", " +
+                "\"kind\": " + quote(it.id.kind.name) + ", " +
+                "\"sha256\": " + quote(it.sha256) + ", " +
+                "\"dexEntries\": " + array(it.dexEntries) { entry -> quote(entry) } +
+                "}"
+        },
+        "\"failures\": " + array(facts.failures) {
+            "{" +
+                "\"apk\": " + quote(it.apk?.label) + ", " +
+                "\"dexEntry\": " + quote(it.dexEntry) + ", " +
+                "\"errorClass\": " + quote(it.errorClass) + ", " +
+                "\"message\": " + quote(it.message) +
+                "}"
+        },
+        "\"markers\": " + array(facts.markers) { installedCodeMarkerJson(it) },
+        "\"readDeviceConfig\": {" +
+            "\"anyReferencingMethodChecksPermission\": " +
+            facts.readDeviceConfig.anyReferencingMethodChecksPermission + ", " +
+            "\"references\": " + array(facts.readDeviceConfig.references) {
+                "{" +
+                    "\"apk\": " + quote(it.apk.label) + ", " +
+                    "\"kind\": " + quote(it.apk.kind.name) + ", " +
+                    "\"dexEntry\": " + quote(it.dexEntry) + ", " +
+                    "\"referencingMethods\": " + it.referencingMethods + ", " +
+                    "\"referencingMethodsWithPermissionCheck\": " +
+                    it.referencingMethodsWithPermissionCheck + ", " +
+                    "\"permissionCheckMethodNames\": " +
+                    array(it.permissionCheckMethodNames) { name -> quote(name) } +
+                    "}"
+            } +
+            "}",
+        "\"deviceConfigMethods\": " + array(facts.deviceConfig.methodNames) { quote(it) },
+        "\"assets\": {" +
+            "\"totalAssetCount\": " + facts.assets.totalAssetCount + ", " +
+            "\"matchingEntryCount\": " + facts.assets.entries.size + ", " +
+            "\"truncated\": " + facts.assets.truncated + ", " +
+            "\"interpretation\": " +
+            quote("candidate non-DeviceConfig input only; presence is not use") + ", " +
+            "\"entries\": " + array(facts.assets.entries) {
+                "{" +
+                    "\"apk\": " + quote(it.apk.label) + ", " +
+                    "\"kind\": " + quote(it.apk.kind.name) + ", " +
+                    "\"name\": " + quote(it.name) + ", " +
+                    "\"sizeBytes\": " + it.sizeBytes +
+                    "}"
+            } +
+            "}",
+    )
+
+    private fun installedCodeMarkerJson(marker: InstalledCodeMarkerFacts): String = "{" +
+        "\"marker\": " + quote(marker.marker) + ", " +
+        "\"match\": " + quote(marker.match.name) + ", " +
+        "\"kind\": " + quote(marker.kind.name) + ", " +
+        "\"presence\": " + quote(marker.presence.name) + ", " +
+        "\"methodCount\": " + marker.methodCount + ", " +
+        "\"references\": " + array(marker.references) {
+            "{" +
+                "\"apk\": " + quote(it.apk.label) + ", " +
+                "\"kind\": " + quote(it.apk.kind.name) + ", " +
+                "\"dexEntry\": " + quote(it.dexEntry) + ", " +
+                "\"matchedString\": " + quote(it.matchedString) + ", " +
+                "\"methodCount\": " + it.methodCount + ", " +
+                "\"defaultsLabel\": " + quote(ProvisioningDependencyEvaluator.DEFAULTS_LABEL) + ", " +
+                "\"defaults\": " + array(it.defaults) { value -> defaultLiteralJson(value) } +
+                "}"
+        } +
+        "}"
+
+    private fun defaultLiteralJson(value: InstalledCodeDefaultValue): String = when (value) {
+        is InstalledCodeDefaultValue.BooleanValue ->
+            "{\"type\": \"boolean\", \"value\": " + value.value + "}"
+
+        is InstalledCodeDefaultValue.IntValue ->
+            "{\"type\": \"int\", \"value\": " + value.value + "}"
+
+        is InstalledCodeDefaultValue.StringValue ->
+            "{\"type\": \"string\", \"value\": " + quote(value.value) + "}"
+
+        InstalledCodeDefaultValue.Unresolved ->
+            "{\"type\": \"unresolved\", \"value\": null}"
+    }
+
+    private fun provisioningDependenciesJson(
+        evaluation: ProvisioningDependencyEvaluation?,
+    ): String {
+        if (evaluation == null) return "null"
+        return "{" +
+            "\"result\": " + quote(evaluation.resultLabel) + ", " +
+            "\"firstFailingStep\": " + quote(evaluation.firstFailingStep?.id?.label) + ", " +
+            "\"earliestUnsettledStep\": " + quote(evaluation.firstUnsettledStep?.id?.label) + ", " +
+            "\"summary\": " + quote(evaluation.summary) + ", " +
+            "\"steps\": " + array(evaluation.steps) { step ->
+                "{" +
+                    "\"step\": " + quote(step.id.label) + ", " +
+                    "\"outcome\": " + quote(step.outcome.label) + ", " +
+                    "\"summary\": " + quote(step.summary) + ", " +
+                    "\"evidence\": " + array(step.evidence) {
+                        "{" +
+                            "\"strength\": " + quote(it.strength.label) + ", " +
+                            "\"source\": " + quote(it.source) + ", " +
+                            "\"statement\": " + quote(it.statement) +
+                            "}"
+                    } +
+                    "}"
+            } +
+            "}"
+    }
+
+    private fun bindHistoryJson(
+        entries: List<PcsBindHistoryEntry>,
+        note: String?,
+    ): String = "{" +
+        "\"label\": " +
+        quote("stored results per component, at most five, oldest first") + ", " +
+        "\"note\": " + quote(note) + ", " +
+        "\"components\": " +
+        array(PcsBindReport.historyByComponent(entries)) { (componentName, perComponent) ->
+            "{" +
+                "\"componentName\": " + quote(componentName) + ", " +
+                "\"entries\": " + array(perComponent) { entry ->
+                    "{" +
+                        "\"observedAt\": " +
+                        quote(DiagnosticFormatting.formatIsoTimestamp(entry.observedAtEpochMillis)) + ", " +
+                        "\"observedAtEpochMillis\": " + entry.observedAtEpochMillis + ", " +
+                        "\"appVersionName\": " + quote(entry.appVersionName) + ", " +
+                        "\"appVersionCode\": " + entry.appVersionCode + ", " +
+                        "\"pcsVersionCode\": " +
+                        (entry.pcsVersionCode?.toString() ?: "null") + ", " +
+                        "\"outcome\": " + quote(entry.result.outcome.label) + ", " +
+                        "\"binding\": " + quote(PcsBindReport.bindingFact(entry.result)) + ", " +
+                        "\"interfaceDescriptor\": " +
+                        quote(entry.result.interfaceDescriptor) + ", " +
+                        "\"exceptionClass\": " + quote(entry.result.exceptionClass) + ", " +
+                        "\"exceptionMessage\": " + quote(entry.result.exceptionMessage) + ", " +
+                        "\"elapsedMillis\": " + entry.result.elapsedMillis + ", " +
+                        "\"unbindCalls\": " + entry.result.unbindCalls +
+                        "}"
+                } +
+                "}"
+        } +
+        "}"
+
+    private fun appendInstalledCodeText(
+        out: StringBuilder,
+        evidence: InstalledCodePackageEvidence,
+    ) {
+        out.append(evidence.requestedPackage).append(": ").append(evidence.outcomeLabel)
+        out.append(" | elapsed=").append(evidence.elapsedMillis).append("ms")
+        when (val outcome = evidence.outcome) {
+            is InstalledCodeOutcome.Read -> appendInstalledCodeFactsText(out, outcome.facts)
+            is InstalledCodeOutcome.Partial -> {
+                out.append(" | partial: absence cannot be claimed")
+                appendInstalledCodeFactsText(out, outcome.facts)
+            }
+
+            is InstalledCodeOutcome.NotVisible ->
+                out.append(" | PackageManager does not expose this package; nothing is claimed").append('\n')
+
+            is InstalledCodeOutcome.ReadError ->
+                out.append(" | ").append(outcome.errorClass).append(": ").append(outcome.message).append('\n')
+
+            is InstalledCodeOutcome.TooLarge ->
+                out.append(" | ").append(outcome.detail).append('\n')
+        }
+    }
+
+    private fun appendInstalledCodeFactsText(out: StringBuilder, facts: InstalledCodePackageFacts) {
+        out.append(" | versionCode=").append(facts.versionCode)
+            .append(" | complete=").append(facts.complete)
+            .append(" | dexReferencesTruncated=").append(facts.referencesTruncated)
+            .append('\n')
+        facts.apks.forEach { apk ->
+            out.append("  apk ").append(apk.id.label).append(" (").append(apk.id.kind.name).append(")")
+                .append(" sha256=").append(apk.sha256)
+                .append(" dex=").append(apk.dexEntries.joinToString(",").ifBlank { "none" })
+                .append('\n')
+        }
+        facts.failures.forEach { failure ->
+            out.append("  failure ").append(failure.apk?.label ?: "package")
+                .append(" ").append(failure.dexEntry ?: "(apk)")
+                .append(" ").append(failure.errorClass)
+                .append(": ").append(failure.message).append('\n')
+        }
+        facts.markers.forEach { marker ->
+            out.append("  ").append(marker.marker)
+                .append(": ").append(marker.presence.name)
+                .append(" methods=").append(marker.methodCount)
+                .append(" (").append(marker.kind.name).append(')')
+            if (marker.references.isNotEmpty()) {
+                val defaults = marker.references.flatMap { it.defaults }.distinct()
+                out.append(" | defaults (").append(ProvisioningDependencyEvaluator.DEFAULTS_LABEL)
+                    .append(")=")
+                    .append(
+                        if (defaults.isEmpty()) {
+                            "none recorded"
+                        } else {
+                            defaults.joinToString(", ", transform = ProvisioningDependencyEvaluator::describeDefault)
+                        },
+                    )
+            }
+            out.append('\n')
+        }
+        out.append("  READ_DEVICE_CONFIG: anyReferencingMethodChecksPermission=")
+            .append(facts.readDeviceConfig.anyReferencingMethodChecksPermission)
+            .append(" (false means \"not shown\", never \"no check\")")
+            .append(" | references=").append(facts.readDeviceConfig.references.size)
+            .append('\n')
+        out.append("  DeviceConfig methods: ")
+            .append(facts.deviceConfig.methodNames.joinToString(", ").ifBlank { "none" })
+            .append('\n')
+        out.append("  assets: total=").append(facts.assets.totalAssetCount)
+            .append(" matching=").append(facts.assets.entries.size)
+            .append(" truncated=").append(facts.assets.truncated)
+            .append(" (candidate non-DeviceConfig input only; presence is not use)").append('\n')
+        facts.assets.entries.forEach { entry ->
+            out.append("    ").append(entry.apk.label).append(" ").append(entry.name)
+                .append(" size=").append(entry.sizeBytes).append('\n')
+        }
+    }
+
     private fun <T> array(items: List<T>, render: (T) -> String): String =
         items.joinToString(prefix = "[\n    ", postfix = "\n  ]", separator = ",\n    ") { render(it) }
 
@@ -1081,7 +1427,20 @@ class FullDiagnosticsReportBuilder {
     }
 
     companion object {
-        const val SCHEMA = "dev.shockstruck.gemininano.full-diagnostics/1"
+        const val SCHEMA = "dev.shockstruck.gemininano.full-diagnostics/2"
+
+        /**
+         * Stated in every export beside the installed-code facts. It records the check that
+         * no reader failure message can carry a string taken from the inspected code.
+         */
+        const val INSTALLED_CODE_EXPORT_NOTE =
+            "Only InstalledCodePackageFacts is exported: package, versionCode, APK digests, " +
+                "dex entry names, marker strings, literal defaults, DeviceConfig and " +
+                "permission-check method names, asset entry names and sizes, and failure " +
+                "class/message. A reader failure message can name an APK file or a ZIP entry " +
+                "name, which the facts already carry as dex entries; no reader message can " +
+                "embed a decoded DEX string, because every format error reports a numeric " +
+                "offset, index or opcode with a fixed label."
 
         /** Packages whose full requested-permission list is exported. */
         private val AICORE_AND_PCS = setOf(

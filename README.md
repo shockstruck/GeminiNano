@@ -1,18 +1,19 @@
 # Gemini Nano Manager
 
 A rootless diagnostic and management app for Android AICore and the public ML Kit GenAI
-surfaces on GrapheneOS. Version 0.6.1 reports what an ordinary sandboxed app can actually
+surfaces on GrapheneOS. Version 0.7.0 reports what an ordinary sandboxed app can actually
 observe, probes every public ML Kit GenAI capability independently, offers only
 user-triggered downloads, runs a fixed-input inference matrix, keeps the original
-on-device summarization, and classifies the provisioning failure it can and cannot
-separate. It does not pretend to provision anything it cannot.
+on-device summarization, reads the installed AICore and PCS code as narrow static facts,
+and names the first provisioning dependency the installed-code evidence shows failing (or
+says it cannot be determined). It does not pretend to provision anything it cannot.
 
 Derived from the public [anandgaur22/GeminiNano](https://github.com/anandgaur22/GeminiNano)
 demo. Internal experimental derivative; not affiliated with Google.
 
 ## Install on the device (no ADB required)
 
-The deliverable is the `offline` debug build, versionName **`0.6.1-offline`** (versionCode 7),
+The deliverable is the `offline` debug build, versionName **`0.7.0-offline`** (versionCode 8),
 applicationId `dev.shockstruck.gemininano`. The `Build offline debug APK` workflow builds it on
 every push and pull request and uploads it as the `gemini-nano-manager-offline-debug` artifact;
 you can also build it locally (see [Build](#build)). Installing it needs only the phone:
@@ -25,7 +26,7 @@ you can also build it locally (see [Build](#build)). Installing it needs only th
    (`Settings → Apps → Special app access → Install unknown apps`); the grant belongs to the
    file manager or browser, not to Gemini Nano Manager.
 3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager** and
-   version `0.6.1-offline`. If your installer does not display the package name or version code,
+   version `0.7.0-offline`. If your installer does not display the package name or version code,
    confirm them after the first launch in **Settings → Version and provenance** (Application ID
    `dev.shockstruck.gemininano`, version name and code) and in **System Components** (version,
    installer and signing certificate SHA-256). If the package name or version differs, you are
@@ -105,6 +106,20 @@ updated.
    ticking it and tapping Run is consent for that one run only and is never remembered. Tap
    **Run Full Diagnostics**, wait for `Report ready`, then **Export JSON** and **Export text**
    (a Storage Access Framework file picker, or the export directory configured in Settings).
+   The same action reads the installed AICore and PCS `classes*.dex` files once, off the main
+   thread, and evaluates the provisioning chain Stage 9 traced. The report card names the
+   first failing dependency, or says it cannot be determined. Every step is `passed`,
+   `failed`, `not observable` or `not tested`, with its evidence and that evidence's strength
+   (`observed`, `inferred`, `dump only`, `source trace`). A July 2025 dump fact never decides a
+   step, a step that cannot be observed is never rendered as passed or failed, and a flag step
+   is `failed` only from all four of: the marker present and loaded by code, one consistent
+   literal default of the right type, the `READ_DEVICE_CONFIG` check found beside it, and the
+   permission observed denied. The default shown is the literal argument right after the flag
+   name; a mixed or unresolved default is "default not established"; a marker with no
+   referencing method is "in the string table, loaded by no instruction". A string-table
+   match is not proof the code uses it, and an installed-code fact that contradicts the dump
+   is exported as a contradiction. Assets are listed as a candidate non-DeviceConfig input
+   only: presence is not use.
    The JSON report contains:
    the report schema and generation time; the app identity; device facts; the full permission
    matrix with *requested*, `checkPermission`, the `requestedPermissionsFlags` bit and the
@@ -124,7 +139,15 @@ updated.
    component-access/association policy and its package names and certificate digests, and
    isolated/process attributes); the
    six-way classifier result with every evidence item's observed/inferred strength, what would
-   refute it and, when INDETERMINATE, the candidates with the missing observation; the offline
+   refute it and, when INDETERMINATE, the candidates with the missing observation; the
+   installed-code facts for AICore and PCS (outcome, versionCode, APK SHA-256, dex entry
+   names, each allowlisted marker's presence and referencing-method count, the literal
+   defaults, the `READ_DEVICE_CONFIG` check fact, `DeviceConfig` method names, asset entry
+   names and sizes, and any dex failure class/message, with the elapsed time per package) and
+   the ordered `provisioningDependencies` evaluation (every step's outcome, summary and
+   evidence with its strength, the first failing step, and the earliest step the evidence
+   cannot settle); the stored bind history per component (at most five, each with its time,
+   app version and PCS versionCode) beside the current bind rows; the offline
    inference matrix if it has run; package versionCode and signer SHA-256 for AICore, PCS, ASI
    and GMS; the relevant `getSystemAvailableFeatures` names; the explicitly untested
    operations; and the diagnostic event log. `BIND_SERVICE` rows carry the holder's
@@ -135,8 +158,10 @@ updated.
 8. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
    convenient); the Diagnostic Logs JSON export if you want the event stream; the AICore and PCS
    versions from Overview; the permission matrix (already in the JSON export); the
-   classifier's `result`, `summary` and `candidates` fields; the per-feature and per-Prompt
-   rows; the installed-manifest evidence; the bind outcomes; the launch outcomes; and the
+   `provisioningDependencies` result and every step's outcome and evidence; the installed-code
+   facts and the elapsed time per package; the classifier's `result`, `summary` and
+   `candidates` fields; the per-feature and per-Prompt rows; the installed-manifest evidence;
+   the current bind outcomes and the stored bind history; the launch outcomes; and the
    offline matrix with a note confirming you disabled connectivity yourself.
 9. **Known platform limit.** On GrapheneOS the summarization probe reports
    `Feature 622 is not available` (`3-PREPARATION_ERROR` / `606-FEATURE_NOT_FOUND`): AICore has
@@ -210,7 +235,7 @@ and for INDETERMINATE the still-open candidates each with its missing observatio
 | AICore Features | Implemented: independent Prompt probe over the four `ModelConfig` combinations (`STABLE/FAST`, `STABLE/FULL`, `PREVIEW/FAST`, `PREVIEW/FULL`) plus the full public GenAI matrix — Rewriting, Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech Translation and Text to Speech. Each row is an isolated probe with status, feature id, error class/code/message, base model name or signature only when returned, latency, and a download button only when ML Kit says DOWNLOADABLE. The retained summarization status is shown separately |
 | Private Compute Services | Implemented: requested-vs-granted permission matrix, exported surface with type/permission/enabled/actions and visibility limits, and safe `bindService` outcomes for the services the installed PCS declares (the current `astrea` names first; the open-source names are aliases). Bind observations persist locally (last five per component) and each row is marked current run, earlier run with its time, or not run, with binding, RPC authorization and provisioning kept as three separate facts. PCS settings and the network usage log have explicit launch controls; the item-details activity is listed but not launched. PCS settings are opened by explicit component resolution, not an `ACTION_APPLICATION_PREFERENCES` intent |
 | Model Manager | Implemented: per-feature observed status, explicit download only when DOWNLOADABLE, progress from the public callbacks, retry after failure, no catalog, no automatic download, no invented cancel |
-| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report. Its **Include PCS bind probe** option is unchecked by default, applies to that run only and is never remembered; ticked, the bind finishes before the report is built |
+| Provisioning Diagnostics | Implemented: the evidence blocks (matrix, feature statuses, Prompt, PCS surface/bind, installed-manifest evidence, installed-code facts, decision), the six-way provisioning failure classifier with INDETERMINATE and the missing observation, the ordered first-failing-dependency evaluation over the Stage 9 chain, the exact feature-622 label, and one **Run Full Diagnostics** action producing an exportable JSON + text report. Its **Include PCS bind probe** option is unchecked by default, applies to that run only and is never remembered; ticked, the bind finishes before the report is built. The installed-code read happens inside that same action, off the main thread; one package's failure never fails the report |
 | Offline Inference | Implemented: one short fixed-input inference per AVAILABLE feature with exact failures and latency; the user must disable connectivity externally and no offline success is claimed from this app alone |
 | Privacy | Implemented |
 | Diagnostic Logs | Implemented: bounded local event bus, search/filter, copy, JSON and text export through SAF, redaction |
@@ -307,10 +332,11 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   file; Text to Speech a fixed sentence with the first supported en-US voice. The screen
   tells the user to disable connectivity externally; it never toggles a radio.
 - **Run Full Diagnostics.** One explicit action re-inspects packages, rebuilds the
-  permission matrix, probes every GenAI feature status, the four Prompt configs and the
-  retained summarization probe, records the PCS surface, includes stored bind rows with
-  their provenance, and builds JSON and text reports through the existing SAF export
-  path. An unchecked-by-default **Include PCS bind probe** option applies to that one run
+  permission matrix, reads the installed AICore and PCS dex code off the main thread,
+  evaluates the ordered provisioning chain, probes every GenAI feature status, the four
+  Prompt configs and the retained summarization probe, records the PCS surface, includes
+  stored bind rows with their provenance and the stored bind history, and builds JSON and
+  text reports through the existing SAF export path. An unchecked-by-default **Include PCS bind probe** option applies to that one run
   only and is never remembered; when ticked, the same bind probe runs and finishes before
   the report is built. Unticked, the action performs no bind. Each probe is isolated and bounded by a 30-second timeout. The report separates
   "probe executed" from "feature available" for every feature and Prompt row, lists every
