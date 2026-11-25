@@ -17,8 +17,8 @@ import dev.shockstruck.gemininano.ui.components.SectionCard
 import dev.shockstruck.gemininano.ui.components.StatusBadge
 
 /**
- * Sections the Stage 2 foundation deliberately leaves empty. They state the stage and the
- * planned scope, and never show estimated or fabricated probe data.
+ * Sections this Stage 3b build deliberately leaves for Stage 4. They state the stage and
+ * the planned scope, and never show estimated or fabricated probe data.
  */
 @Composable
 fun PlaceholderScreens(section: Section, modifier: Modifier = Modifier) {
@@ -39,7 +39,7 @@ fun PlaceholderScreens(section: Section, modifier: Modifier = Modifier) {
                 )
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    text = "This section is intentionally empty in the Stage 2 foundation build. " +
+                    text = "This section is intentionally empty in this build ($stage). " +
                         "It shows no device data, no estimated values and no placeholder success states.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
