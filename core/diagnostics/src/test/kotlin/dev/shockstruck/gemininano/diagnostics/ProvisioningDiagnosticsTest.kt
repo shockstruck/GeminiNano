@@ -4,6 +4,7 @@ import dev.shockstruck.gemininano.model.AicoreFeatureLabels
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.PcsBindOutcome
+import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PromptModelConfig
 import dev.shockstruck.gemininano.testing.TestFixtures
 import org.junit.Assert.assertEquals
@@ -146,14 +147,53 @@ class ProvisioningDiagnosticsTest {
     }
 
     @Test
-    fun binderReturnedPointsPastTheOsLayer() {
+    fun binderReturnedIsThisAppsOwnResultAndClaimsNothingAboutAicore() {
         val lines = presenter.present(
             evidence(
                 binds = listOf(TestFixtures.bindResult(outcome = PcsBindOutcome.BINDER_RETURNED)),
             ),
         ).lines
-        assertTrue(lines.any { it.contains("binder returned") })
-        assertTrue(lines.any { it.contains("gRPC policy/API key") })
+        val line = lines.first { it.contains("binder returned") }
+        assertTrue(line.contains("this app's own bind attempt"))
+        assertTrue(line.contains("does not prove or describe AICore's access"))
+        assertTrue(!line.contains("gRPC policy/API key"))
+    }
+
+    @Test
+    fun aPlannedBindIsNotReportedAsARunOrAFailure() {
+        val lines = presenter.present(
+            evidence(
+                binds = listOf(
+                    PcsBindResult(
+                        componentName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService",
+                        outcome = PcsBindOutcome.NOT_RUN,
+                        role = "grpc",
+                    ),
+                ),
+            ),
+        ).lines
+        val line = lines.first { it.contains("gRPC service") }
+        assertTrue(line.contains("has not run"))
+        assertTrue(line.contains("explicit tap"))
+        assertTrue(!line.contains("association"))
+    }
+
+    @Test
+    fun aKnownServiceThePackageDoesNotDeclareSaysSo() {
+        val lines = presenter.present(
+            evidence(
+                binds = listOf(
+                    PcsBindResult(
+                        componentName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService",
+                        outcome = PcsBindOutcome.NOT_DECLARED,
+                        role = "grpc",
+                    ),
+                ),
+            ),
+        ).lines
+        val line = lines.first { it.contains("gRPC service") }
+        assertTrue(line.contains("does not declare"))
+        assertTrue(line.contains("no bind was attempted"))
     }
 
     @Test

@@ -8,12 +8,16 @@ import dev.shockstruck.gemininano.model.GenAiFeature
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
+import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
 import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PcsSurface
 import dev.shockstruck.gemininano.model.PermissionGrantFacts
 import dev.shockstruck.gemininano.model.PermissionMatrix
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
+import dev.shockstruck.gemininano.model.PlatformPermissions
+import dev.shockstruck.gemininano.model.PlatformPrincipals
 import dev.shockstruck.gemininano.model.PromptConfigStatus
+import dev.shockstruck.gemininano.model.PromptModelConfig
 import dev.shockstruck.gemininano.model.SummarizationProbeResult
 
 /** Everything the full diagnostic report may contain, already collected by the app. */
@@ -30,6 +34,11 @@ data class FullDiagnosticsInput(
     val events: List<DiagnosticEvent>,
     /** Full package facts, so every requested permission can be exported with all sources. */
     val packages: List<PackageFacts> = emptyList(),
+    /** Results of explicit user-tapped PCS activity launches. */
+    val launchResults: List<PcsActivityLaunchResult> = emptyList(),
+    /** `getSystemAvailableFeatures` names relevant to NPU, AI, virtualization or PCC. */
+    val systemFeatures: List<String> = emptyList(),
+    val systemFeatureReadError: String? = null,
 )
 
 data class FullDiagnosticsReport(
@@ -80,15 +89,25 @@ class FullDiagnosticsReportBuilder {
         out.append("  \"features\": ")
         out.append(array(featureRows(input.features)) { featureJson(it) }).append(",\n")
         out.append("  \"permissionVerification\": ")
-        out.append(packagePermissionsJson(input.packages)).append(",\n")
+        out.append(packagePermissionsJson(input)).append(",\n")
+        out.append("  \"packageIdentities\": ")
+        out.append(packageIdentitiesJson(input.packages)).append(",\n")
+        out.append("  \"systemFeatures\": ")
+        out.append(array(input.systemFeatures) { quote(it) }).append(",\n")
+        out.append("  \"systemFeaturesReadError\": ")
+        out.append(quote(input.systemFeatureReadError)).append(",\n")
         out.append("  \"prompt\": ")
-        out.append(array(input.prompt) { promptJson(it) }).append(",\n")
+        out.append(array(promptRows(input.prompt)) { promptJson(it) }).append(",\n")
         out.append("  \"summarization\": ")
         out.append(summarizationJson(input.summarization)).append(",\n")
         out.append("  \"pcs\": ")
         out.append(pcsJson(input.surface)).append(",\n")
         out.append("  \"pcsBind\": ")
         out.append(array(input.bindResults) { bindJson(it) }).append(",\n")
+        out.append("  \"pcsLaunches\": ")
+        out.append(array(input.launchResults) { launchJson(it) }).append(",\n")
+        out.append("  \"untestedOperations\": ")
+        out.append(array(untestedOperations(input)) { quote(it) }).append(",\n")
         out.append("  \"offline\": ")
         out.append(array(input.offline) { offlineJson(it) }).append(",\n")
         out.append("  \"diagnostics\": {\n")
@@ -146,6 +165,8 @@ class FullDiagnosticsReportBuilder {
         GenAiFeature.MATRIX.forEach { feature ->
             val result = featureRows(input.features).first { it.feature == feature }
             out.append(feature.displayName).append(": ").append(result.status.label)
+            out.append(" | probeExecuted=").append(result.status != FeatureStatusKind.NOT_PROBED)
+            out.append(" | featureAvailable=").append(result.status == FeatureStatusKind.AVAILABLE)
             result.detail?.let { out.append(" | ").append(it) }
             result.failure?.let {
                 out.append(" | error=").append(it.codeLabel)
@@ -171,40 +192,46 @@ class FullDiagnosticsReportBuilder {
         if (input.packages.isEmpty()) {
             out.append("package facts not collected\n")
         } else {
+            val aicoreFirstInstall = aicorePackage(input.packages)?.firstInstallTime
             input.packages.forEach { packageFacts ->
                 out.append(packageFacts.packageName).append(": ")
                     .append(PackageFactsFormatting.visibilityLabel(packageFacts))
+                    .append(" | coverage: permissions=").append(packageFacts.readCoverage.permissions)
+                    .append(" components=").append(packageFacts.readCoverage.components)
+                    .append(" signers=").append(packageFacts.readCoverage.signers)
+                    .append(" metadata=").append(packageFacts.readCoverage.metadata)
                     .append('\n')
-                packageFacts.permissionGrants.forEach { fact ->
-                    out.append("  ")
-                        .append(PermissionMatrixFormatting.renderPermissionFact(fact))
-                        .append('\n')
-                }
-                val denied = packageFacts.requestedButDeniedSignatureOrPrivileged
-                if (denied.isNotEmpty()) {
-                    out.append("  requested-but-denied signature/privileged: ")
-                        .append(denied.joinToString(", ") {
-                            PermissionMatrixFormatting.shortPermissionLabel(it.permission)
-                        })
-                        .append('\n')
+                if (!packageFacts.permissionsRead) {
+                    out.append("  permissions not read on this reduced package read; not requested cannot be concluded.\n")
+                } else {
+                    selectedPermissions(packageFacts).forEach { fact ->
+                        out.append("  ").append(permissionFactText(fact, packageFacts, aicoreFirstInstall)).append('\n')
+                    }
+                    val denied = selectedPermissions(packageFacts)
+                        .filter { it.isRequestedButDeniedSignatureOrPrivileged }
+                    if (denied.isNotEmpty()) {
+                        out.append("  requested-but-denied signature/privileged: ")
+                            .append(denied.joinToString(", ") {
+                                PermissionMatrixFormatting.shortPermissionLabel(it.permission)
+                            })
+                            .append('\n')
+                    }
                 }
             }
         }
 
         out.appendLine()
         out.append("== Prompt ==\n")
-        if (input.prompt.isEmpty()) {
-            out.append("not probed\n")
-        } else {
-            input.prompt.forEach { status ->
-                out.append(status.config.label).append(": ").append(status.status.label)
-                status.errorCode?.let { out.append(" | error=").append(it) }
-                status.exceptionClass?.let { out.append(" | class=").append(it) }
-                status.message?.let { out.append(" | message=").append(it) }
-                status.featureId?.let { out.append(" | featureId=").append(it) }
-                status.baseModelName?.let { out.append(" | baseModel=").append(it) }
-                out.append(" | latency=").append(status.latencyMillis).append("ms\n")
-            }
+        promptRows(input.prompt).forEach { status ->
+            out.append(status.config.label).append(": ").append(status.status.label)
+            out.append(" | probeExecuted=").append(status.status != FeatureStatusKind.NOT_PROBED)
+            out.append(" | featureAvailable=").append(status.status == FeatureStatusKind.AVAILABLE)
+            status.errorCode?.let { out.append(" | error=").append(it) }
+            status.exceptionClass?.let { out.append(" | class=").append(it) }
+            status.message?.let { out.append(" | message=").append(it) }
+            status.featureId?.let { out.append(" | featureId=").append(it) }
+            status.baseModelName?.let { out.append(" | baseModel=").append(it) }
+            out.append(" | latency=").append(status.latencyMillis).append("ms\n")
         }
 
         out.appendLine()
@@ -227,6 +254,9 @@ class FullDiagnosticsReportBuilder {
             out.append("not inspected\n")
         } else if (!surface.packageVisible) {
             out.append("visibility limited: PCS is not visible to this app (not proof of absence)\n")
+        } else if (!surface.componentsRead) {
+            out.append("components NOT READ: ").append(surface.componentsReadDetail ?: "reduced package read")
+                .append(". An empty surface is not claimed.\n")
         } else {
             out.append("Exported components: ").append(surface.exportedComponents.size).append('\n')
             surface.exportedComponents.forEach { component ->
@@ -235,21 +265,101 @@ class FullDiagnosticsReportBuilder {
             out.append("Settings: ")
                 .append(if (surface.settings.resolved) surface.settings.activityName ?: "resolved" else "not resolved")
                 .append(" | ").append(surface.settings.detail).append('\n')
+            out.append("Launch controls (explicit tap only; nothing is read back from another app's screen):\n")
+            surface.launchTargets.forEach { target ->
+                out.append("  ").append(target.label).append(" (").append(target.className).append("): ")
+                    .append(if (target.launchable) "launchable" else "no launch")
+                    .append(" | ").append(target.detail).append('\n')
+            }
         }
 
         out.appendLine()
         out.append("== PCS bind results (only if the user ran the separate bind probe) ==\n")
         if (input.bindResults.isEmpty()) {
-            out.append("not run\n")
+            out.append("not run: no bind plan was collected\n")
         } else {
             input.bindResults.forEach { result ->
                 out.append(result.componentName).append(": ").append(result.outcome.label)
-                result.interfaceDescriptor?.let { out.append(" | interface=").append(it) }
+                result.role?.let { out.append(" | role=").append(it) }
+                result.declaredName?.let { out.append(" | declared=").append(it) }
+                result.requiredPermission?.let { out.append(" | requiredPermission=").append(it) }
+                out.append(" | attempted=").append(result.outcome.attempted)
+                out.append(" | bindFlag=").append(result.bindFlag)
+                if (result.interfaceDescriptor != null) {
+                    out.append(" | interface=\"").append(result.interfaceDescriptor).append("\"")
+                }
+                if (result.outcome.attempted) {
+                    out.append(" | binder=").append(result.binderLabel)
+                }
+                result.descriptorReadMillis?.let { out.append(" | descriptorReadMs=").append(it) }
+                result.descriptorErrorClass?.let { out.append(" | descriptorErrorClass=").append(it) }
+                result.descriptorErrorMessage?.let { out.append(" | descriptorErrorMessage=").append(it) }
                 result.exceptionClass?.let { out.append(" | class=").append(it) }
                 result.exceptionMessage?.let { out.append(" | message=").append(it) }
                 out.append(" | unbindCalls=").append(result.unbindCalls)
                 out.append(" | elapsed=").append(result.elapsedMillis).append("ms\n")
             }
+            out.append("Note: each result belongs to this app's own bind attempt; it does not prove AICore's access to PCS.\n")
+        }
+
+        out.appendLine()
+        out.append("== PCS activity launches (explicit user taps only) ==\n")
+        if (input.launchResults.isEmpty()) {
+            out.append("no launch attempted\n")
+        } else {
+            input.launchResults.forEach { result ->
+                out.append(result.label).append(" (").append(result.className).append("): ")
+                    .append(result.outcomeLabel)
+                out.append(" | resolved=").append(result.resolved)
+                result.exceptionClass?.let { out.append(" | class=").append(it) }
+                result.exceptionMessage?.let { out.append(" | message=").append(it) }
+                result.elapsedMillis?.let { out.append(" | elapsed=").append(it).append("ms") }
+                out.append('\n')
+            }
+            out.append("Nothing is read back from another app's screen.\n")
+        }
+
+        out.appendLine()
+        out.append("== Package identities ==\n")
+        val identities = identityPackages(input.packages)
+        if (identities.isEmpty()) {
+            out.append("not collected\n")
+        } else {
+            identities.forEach { packageFacts ->
+                out.append(packageFacts.packageName).append(": versionCode=")
+                    .append(packageFacts.versionCode ?: "unknown")
+                    .append(" | signerSha256=")
+                    .append(
+                        if (!packageFacts.readCoverage.signers) "not read"
+                        else packageFacts.signingSha256.joinToString(",").ifEmpty { "none" },
+                    )
+                    .append(" | visibility=").append(PackageFactsFormatting.visibilityLabel(packageFacts))
+                    .append('\n')
+            }
+        }
+
+        out.appendLine()
+        out.append("== System features naming NPU, AI, virtualization or private compute (names only) ==\n")
+        input.systemFeatureReadError?.let { out.append("getSystemAvailableFeatures read error: ").append(it).append('\n') }
+        if (input.systemFeatures.isEmpty()) {
+            out.append(
+                if (input.systemFeatureReadError == null) {
+                    "none reported by getSystemAvailableFeatures\n"
+                } else {
+                    "no names read; the failure above is not a claim that none exist\n"
+                },
+            )
+        } else {
+            input.systemFeatures.forEach { out.append("  ").append(it).append('\n') }
+        }
+
+        out.appendLine()
+        out.append("== Explicitly untested operations ==\n")
+        val untested = untestedOperations(input)
+        if (untested.isEmpty()) {
+            out.append("none\n")
+        } else {
+            untested.forEach { out.append("  ").append(it).append('\n') }
         }
 
         out.appendLine()
@@ -284,12 +394,6 @@ class FullDiagnosticsReportBuilder {
         return out.toString()
     }
 
-    /** Every matrix feature, with a NOT_PROBED row where no result exists. */
-    private fun featureRows(features: List<FeatureProbeResult>): List<FeatureProbeResult> {
-        val byFeature = features.associateBy { it.feature }
-        return GenAiFeature.MATRIX.map { byFeature[it] ?: FeatureProbeResult.notProbed(it) }
-    }
-
     private fun permissionMatrixJson(matrix: PermissionMatrix?): String {
         if (matrix == null) return "null"
         val out = StringBuilder()
@@ -320,35 +424,73 @@ class FullDiagnosticsReportBuilder {
         return out.toString()
     }
 
-    private fun packagePermissionsJson(packages: List<PackageFacts>): String {
-        if (packages.isEmpty()) return "[]"
-        return array(packages) { packageFacts ->
+    private fun packagePermissionsJson(input: FullDiagnosticsInput): String {
+        if (input.packages.isEmpty()) return "[]"
+        val aicoreFirstInstall = aicorePackage(input.packages)?.firstInstallTime
+        return array(input.packages) { packageFacts ->
+            val selected = if (packageFacts.permissionsRead) selectedPermissions(packageFacts) else emptyList()
             "{" +
                 "\"packageName\": " + quote(packageFacts.packageName) + ", " +
                 "\"visibility\": " + quote(packageFacts.visibility.name) + ", " +
+                "\"permissionsRead\": " + packageFacts.permissionsRead + ", " +
+                "\"coverage\": {" +
+                "\"permissions\": " + packageFacts.readCoverage.permissions + ", " +
+                "\"components\": " + packageFacts.readCoverage.components + ", " +
+                "\"signers\": " + packageFacts.readCoverage.signers + ", " +
+                "\"metadata\": " + packageFacts.readCoverage.metadata + "}, " +
                 "\"readError\": " + (packageFacts.readError?.let {
                     "{\"exceptionClass\": " + quote(it.exceptionClass) + ", " +
                         "\"message\": " + quote(it.message) + ", " +
                         "\"attempts\": " + it.attempts + "}"
                 } ?: "null") + ", " +
                 "\"requestedPermissions\": " +
-                array(packageFacts.requestedPermissions) { quote(it) } + ", " +
-                "\"permissions\": " + array(packageFacts.permissionGrants) { permissionFactJson(it) } + ", " +
+                array(selectedPermissionNames(packageFacts)) { quote(it) } + ", " +
+                "\"permissions\": " + array(selected) { permissionFactJson(it, packageFacts, aicoreFirstInstall) } + ", " +
                 "\"requestedButDeniedSignatureOrPrivileged\": " +
-                array(packageFacts.requestedButDeniedSignatureOrPrivileged) { quote(it.permission) } +
+                array(selected.filter { it.isRequestedButDeniedSignatureOrPrivileged }) { quote(it.permission) } +
                 "}"
         }
     }
 
-    private fun permissionFactJson(fact: PermissionGrantFacts): String = "{" +
-        "\"permission\": " + quote(fact.permission) + ", " +
-        "\"requested\": " + fact.requested + ", " +
-        "\"checkPermission\": " + quote(fact.state.label) + ", " +
-        "\"requestedPermissionsFlagsGrant\": " +
-        (fact.requestedFlagsGrant?.toString() ?: "null") + ", " +
-        "\"grantSourcesDisagree\": " + fact.grantSourcesDisagree + ", " +
-        "\"declaration\": " + declarationJson(fact.declaration) +
-        "}"
+    private fun permissionFactJson(
+        fact: PermissionGrantFacts,
+        holder: PackageFacts?,
+        aicoreFirstInstallTime: Long?,
+    ): String {
+        val installs = if (fact.permission == PlatformPermissions.AICORE_BIND) {
+            "\"firstInstallTime\": " + (holder?.firstInstallTime?.toString() ?: "null") + ", " +
+                "\"lastUpdateTime\": " + (holder?.lastUpdateTime?.toString() ?: "null") + ", " +
+                "\"aicoreFirstInstallTime\": " + (aicoreFirstInstallTime?.toString() ?: "null") + ", "
+        } else {
+            ""
+        }
+        return "{" +
+            "\"permission\": " + quote(fact.permission) + ", " +
+            "\"requested\": " + fact.requested + ", " +
+            "\"checkPermission\": " + quote(fact.state.label) + ", " +
+            "\"requestedPermissionsFlagsGrant\": " +
+            (fact.requestedFlagsGrant?.toString() ?: "null") + ", " +
+            "\"grantSourcesDisagree\": " + fact.grantSourcesDisagree + ", " +
+            installs +
+            "\"declaration\": " + declarationJson(fact.declaration) +
+            "}"
+    }
+
+    private fun packageIdentitiesJson(packages: List<PackageFacts>): String =
+        array(identityPackages(packages)) { packageFacts ->
+            "{" +
+                "\"packageName\": " + quote(packageFacts.packageName) + ", " +
+                "\"visibility\": " + quote(packageFacts.visibility.name) + ", " +
+                "\"versionName\": " + quote(packageFacts.versionName) + ", " +
+                "\"versionCode\": " + (packageFacts.versionCode?.toString() ?: "null") + ", " +
+                "\"signersRead\": " + packageFacts.readCoverage.signers + ", " +
+                "\"signers\": " + quote(if (packageFacts.readCoverage.signers) "read" else "not read") + ", " +
+                "\"signerSha256\": " +
+                array(packageFacts.signingSha256) { quote(it) } + ", " +
+                "\"firstInstallTime\": " + (packageFacts.firstInstallTime?.toString() ?: "null") + ", " +
+                "\"lastUpdateTime\": " + (packageFacts.lastUpdateTime?.toString() ?: "null") +
+                "}"
+        }
 
     private fun declarationJson(declaration: dev.shockstruck.gemininano.model.PermissionDeclaration?): String {
         if (declaration == null) return "null"
@@ -368,6 +510,8 @@ class FullDiagnosticsReportBuilder {
         "\"label\": " + quote(result.feature.displayName) + ", " +
         "\"artifact\": " + quote(result.feature.artifact) + ", " +
         "\"status\": " + quote(result.status.label) + ", " +
+        "\"probeExecuted\": " + (result.status != FeatureStatusKind.NOT_PROBED) + ", " +
+        "\"featureAvailable\": " + (result.status == FeatureStatusKind.AVAILABLE) + ", " +
         "\"featureId\": " + (result.featureId?.toString() ?: "null") + ", " +
         "\"errorCode\": " + (result.errorCode?.toString() ?: "null") + ", " +
         "\"exceptionClass\": " + quote(result.exceptionClass) + ", " +
@@ -384,6 +528,8 @@ class FullDiagnosticsReportBuilder {
     private fun promptJson(status: PromptConfigStatus): String = "{" +
         "\"config\": " + quote(status.config.label) + ", " +
         "\"status\": " + quote(status.status.label) + ", " +
+        "\"probeExecuted\": " + (status.status != FeatureStatusKind.NOT_PROBED) + ", " +
+        "\"featureAvailable\": " + (status.status == FeatureStatusKind.AVAILABLE) + ", " +
         "\"featureId\": " + (status.featureId?.toString() ?: "null") + ", " +
         "\"errorCode\": " + (status.errorCode?.toString() ?: "null") + ", " +
         "\"exceptionClass\": " + quote(status.exceptionClass) + ", " +
@@ -411,14 +557,30 @@ class FullDiagnosticsReportBuilder {
         if (surface == null) return "null"
         return "{" +
             "\"packageVisible\": " + surface.packageVisible + ", " +
+            "\"componentsRead\": " + surface.componentsRead + ", " +
+            "\"componentsReadDetail\": " + quote(surface.componentsReadDetail) + ", " +
             "\"exportedComponents\": " + array(surface.exportedComponents) {
                 "{" +
                     "\"kind\": " + quote(it.kind.label) + ", " +
                     "\"className\": " + quote(it.className) + ", " +
                     "\"exported\": " + it.exported + ", " +
                     "\"enabled\": " + it.enabled + ", " +
-                    "\"effectivelyEnabled\": " + it.effectivelyEnabled + ", " +
+                    "\"manifestEffectiveEnabled\": " + it.manifestEffectiveEnabled + ", " +
+                    "\"runtimeEnabledSetting\": " + (it.runtimeEnabledSetting?.toString() ?: "null") + ", " +
+                    "\"effectivelyEnabled\": " + (it.effectivelyEnabled?.toString() ?: "null") + ", " +
                     "\"permission\": " + quote(it.requiredPermission) +
+                    "}"
+            } + ", " +
+            "\"launchTargets\": " + array(surface.launchTargets) {
+                "{" +
+                    "\"label\": " + quote(it.label) + ", " +
+                    "\"className\": " + quote(it.className) + ", " +
+                    "\"declared\": " + it.declared + ", " +
+                    "\"exported\": " + it.exported + ", " +
+                    "\"effectivelyEnabled\": " + (it.effectivelyEnabled?.toString() ?: "null") + ", " +
+                    "\"requiredPermission\": " + quote(it.requiredPermission) + ", " +
+                    "\"launchable\": " + it.launchable + ", " +
+                    "\"detail\": " + quote(it.detail) +
                     "}"
             } + ", " +
             "\"settings\": {" +
@@ -431,12 +593,114 @@ class FullDiagnosticsReportBuilder {
     private fun bindJson(result: PcsBindResult): String = "{" +
         "\"componentName\": " + quote(result.componentName) + ", " +
         "\"outcome\": " + quote(result.outcome.label) + ", " +
+        "\"attempted\": " + result.outcome.attempted + ", " +
+        "\"role\": " + quote(result.role) + ", " +
+        "\"declaredName\": " + quote(result.declaredName) + ", " +
+        "\"requiredPermission\": " + quote(result.requiredPermission) + ", " +
+        "\"bindFlag\": " + quote(result.bindFlag) + ", " +
+        "\"binderAlive\": " + (result.binderAlive?.toString() ?: "null") + ", " +
+        "\"binder\": " + quote(result.binderLabel) + ", " +
+        "\"descriptorReadMillis\": " + (result.descriptorReadMillis?.toString() ?: "null") + ", " +
+        "\"descriptorErrorClass\": " + quote(result.descriptorErrorClass) + ", " +
+        "\"descriptorErrorMessage\": " + quote(result.descriptorErrorMessage) + ", " +
         "\"exceptionClass\": " + quote(result.exceptionClass) + ", " +
         "\"exceptionMessage\": " + quote(result.exceptionMessage) + ", " +
         "\"interfaceDescriptor\": " + quote(result.interfaceDescriptor) + ", " +
         "\"elapsedMillis\": " + result.elapsedMillis + ", " +
         "\"unbindCalls\": " + result.unbindCalls +
         "}"
+
+    private fun launchJson(result: PcsActivityLaunchResult): String = "{" +
+        "\"label\": " + quote(result.label) + ", " +
+        "\"className\": " + quote(result.className) + ", " +
+        "\"resolved\": " + result.resolved + ", " +
+        "\"outcome\": " + quote(result.outcomeLabel) + ", " +
+        "\"exceptionClass\": " + quote(result.exceptionClass) + ", " +
+        "\"exceptionMessage\": " + quote(result.exceptionMessage) + ", " +
+        "\"elapsedMillis\": " + (result.elapsedMillis?.toString() ?: "null") +
+        "}"
+
+    /** Every matrix feature, with a NOT_PROBED row where no result exists. */
+    private fun featureRows(features: List<FeatureProbeResult>): List<FeatureProbeResult> {
+        val byFeature = features.associateBy { it.feature }
+        return GenAiFeature.MATRIX.map { byFeature[it] ?: FeatureProbeResult.notProbed(it) }
+    }
+
+    /** Every Prompt config, with a NOT_PROBED row where no result exists. */
+    private fun promptRows(prompt: List<PromptConfigStatus>): List<PromptConfigStatus> {
+        val byConfig = prompt.associateBy { it.config }
+        return PromptModelConfig.ALL.map { config ->
+            byConfig[config] ?: PromptConfigStatus(
+                config = config,
+                status = FeatureStatusKind.NOT_PROBED,
+                featureId = null,
+                errorCode = null,
+                exceptionClass = null,
+                message = null,
+                baseModelName = null,
+                generatedText = null,
+                latencyMillis = 0L,
+                probedAtEpochMillis = 0L,
+            )
+        }
+    }
+
+    private fun selectedPermissionNames(packageFacts: PackageFacts): List<String> =
+        if (packageFacts.packageName in AICORE_AND_PCS) {
+            packageFacts.requestedPermissions
+        } else {
+            packageFacts.requestedPermissions.filter { it in PlatformPermissions.OTHER_PACKAGE_PERMISSIONS }
+        }
+
+    private fun selectedPermissions(packageFacts: PackageFacts): List<PermissionGrantFacts> =
+        if (packageFacts.packageName in AICORE_AND_PCS) {
+            packageFacts.permissionGrants
+        } else {
+            packageFacts.permissionGrants.filter {
+                it.permission in PlatformPermissions.OTHER_PACKAGE_PERMISSIONS
+            }
+        }
+
+    private fun permissionFactText(
+        fact: PermissionGrantFacts,
+        holder: PackageFacts,
+        aicoreFirstInstallTime: Long?,
+    ): String {
+        val base = PermissionMatrixFormatting.renderPermissionFact(fact)
+        if (fact.permission != PlatformPermissions.AICORE_BIND) return base
+        return "$base · firstInstall=${holder.firstInstallTime ?: "unknown"} · " +
+            "lastUpdate=${holder.lastUpdateTime ?: "unknown"} · " +
+            "aicoreFirstInstall=${aicoreFirstInstallTime ?: "unknown"}"
+    }
+
+    private fun identityPackages(packages: List<PackageFacts>): List<PackageFacts> =
+        packages.filter { it.packageName in IDENTITY_PACKAGES }.sortedBy { it.packageName }
+
+    private fun aicorePackage(packages: List<PackageFacts>): PackageFacts? =
+        packages.firstOrNull { it.packageName == PlatformPrincipals.AICORE }
+            ?: packages.firstOrNull { it.packageName == PlatformPrincipals.AICORE_LEGACY }
+
+    private fun untestedOperations(input: FullDiagnosticsInput): List<String> = buildList {
+        featureRows(input.features)
+            .filter { it.status == FeatureStatusKind.NOT_PROBED }
+            .forEach { add("Probe ${it.feature.displayName}") }
+        promptRows(input.prompt)
+            .filter { it.status == FeatureStatusKind.NOT_PROBED }
+            .forEach { add("Prompt ${it.config.label}") }
+        if (input.summarization == null) add("Summarization probe")
+        input.bindResults.filter { !it.outcome.attempted }.forEach {
+            add("Bind ${it.componentName} (${it.outcome.label})")
+        }
+        input.surface?.launchTargets.orEmpty().forEach { target ->
+            val launched = input.launchResults.any { it.className == target.className }
+            if (!target.launchable) {
+                add("Launch ${target.label} not attempted: ${target.detail}")
+            } else if (!launched) {
+                add("Launch ${target.label} (${target.className})")
+            }
+        }
+        if (input.offline.isEmpty()) add("Offline inference matrix")
+    }
 
     private fun offlineJson(result: OfflineInferenceResult): String = "{" +
         "\"feature\": " + quote(result.feature.key) + ", " +
@@ -491,5 +755,16 @@ class FullDiagnosticsReportBuilder {
 
     companion object {
         const val SCHEMA = "dev.shockstruck.gemininano.full-diagnostics/1"
+
+        /** Packages whose full requested-permission list is exported. */
+        private val AICORE_AND_PCS = setOf(
+            PlatformPrincipals.AICORE,
+            PlatformPrincipals.AICORE_LEGACY,
+            PlatformPrincipals.PCS,
+        )
+
+        /** Packages whose versionCode and signer are exported. */
+        private val IDENTITY_PACKAGES =
+            AICORE_AND_PCS + setOf(PlatformPrincipals.ASI, PlatformPrincipals.GMS)
     }
 }

@@ -20,7 +20,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -30,8 +29,6 @@ import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.diagnostics.DiagnosticFormatting
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFeature
-import dev.shockstruck.gemininano.model.Outcome
-import dev.shockstruck.gemininano.model.Severity
 import dev.shockstruck.gemininano.ui.components.KeyValueRow
 import dev.shockstruck.gemininano.ui.components.PcsBindCard
 import dev.shockstruck.gemininano.ui.components.PcsSurfaceCard
@@ -56,7 +53,6 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
     val settings by graph.settings.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val exportManager = remember(viewModel) { viewModel.exportManager() }
     var exportMessage by remember { mutableStateOf<String?>(null) }
@@ -136,11 +132,11 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                     }
                     TextButton(
                         onClick = { startExport(json = true) },
-                        enabled = state.fullReport != null,
+                        enabled = state.fullReport != null && !state.reportStale,
                     ) { Text("Export JSON") }
                     TextButton(
                         onClick = { startExport(json = false) },
-                        enabled = state.fullReport != null,
+                        enabled = state.fullReport != null && !state.reportStale,
                     ) { Text("Export text") }
                 }
                 Text(
@@ -166,6 +162,15 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
                         if (state.bindResults.isEmpty()) "not run" else state.bindResults.size.toString(),
                     )
                     KeyValueRow("Format", "JSON and text, through the existing SAF export path")
+                }
+                if (state.reportStale) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "This report predates the latest bind or launch result. " +
+                            "Run Full Diagnostics again before exporting.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
                 state.fullReportMessage?.let { text ->
                     Spacer(Modifier.height(6.dp))
@@ -217,24 +222,15 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
         item {
             PcsSurfaceCard(
                 surface = state.surface,
-                onOpenSettings = {
-                    runCatching { context.startActivity(graph.pcsSurfaceInspector.settingsIntent()) }
-                        .onFailure { failure ->
-                            graph.diagnosticBus.log(
-                                component = "pcs",
-                                operation = "openSettings",
-                                outcome = Outcome.FAILURE,
-                                severity = Severity.ERROR,
-                                exceptionClass = failure.javaClass.name,
-                                message = failure.message,
-                            )
-                        }
-                },
+                launchResults = state.launchResults,
+                launchBusy = state.launchBusy,
+                onLaunch = viewModel::launchActivity,
             )
         }
         item {
             PcsBindCard(
                 results = state.bindResults,
+                eligibleCount = state.eligibleBindCount,
                 busy = state.bindBusy,
                 message = state.bindMessage,
                 onRun = viewModel::runBindProbe,

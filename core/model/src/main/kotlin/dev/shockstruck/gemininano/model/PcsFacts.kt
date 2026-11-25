@@ -1,20 +1,40 @@
 package dev.shockstruck.gemininano.model
 
-/** What a single safe `bindService` attempt observed. */
-enum class PcsBindOutcome(val label: String) {
-    BINDER_RETURNED("binder returned"),
-    NULL_BINDING("null binding"),
+/** What a single safe `bindService` attempt observed, or why none was attempted. */
+enum class PcsBindOutcome(val label: String, val attempted: Boolean) {
+    BINDER_RETURNED("binder returned", attempted = true),
+    NULL_BINDING("null binding", attempted = true),
 
     /** Only a real `SecurityException`, never another throwable. */
-    SECURITY_EXCEPTION("SecurityException"),
+    SECURITY_EXCEPTION("SecurityException", attempted = true),
 
     /** `bindService` threw something that is not a `SecurityException`. */
-    BIND_ERROR("bindService threw"),
+    BIND_ERROR("bindService threw", attempted = true),
 
-    BIND_REFUSED("bindService returned false"),
-    TIMEOUT("timeout"),
-    BINDING_DIED("binding died"),
-    NOT_EXPORTED("not exported at runtime"),
+    BIND_REFUSED("bindService returned false", attempted = true),
+    TIMEOUT("timeout", attempted = true),
+    BINDING_DIED("binding died", attempted = true),
+
+    /** Declared by the installed package, but not exported at runtime. */
+    NOT_EXPORTED("declared, not exported", attempted = false),
+
+    /** Declared, but the effective enabled state is false. */
+    NOT_ENABLED("declared, not effectively enabled", attempted = false),
+
+    /** Declared, but the public enabled-setting lookup failed: not proven enabled. */
+    ENABLED_UNKNOWN("declared, enabled state unknown", attempted = false),
+
+    /** Declared, but it requires a manifest-level binding permission. */
+    REQUIRES_PERMISSION("declared, requires a permission", attempted = false),
+
+    /** A known catalogue service the installed PCS package does not declare. */
+    NOT_DECLARED("not declared by the installed package", attempted = false),
+
+    /** Components were not read (reduced flag set), so nothing can be said about them. */
+    NOT_READ("components not read", attempted = false),
+
+    /** The planned bind exists but the user has not run the probe. */
+    NOT_RUN("NOT RUN", attempted = false),
 }
 
 data class PcsBindResult(
@@ -27,7 +47,24 @@ data class PcsBindResult(
     val serviceDisconnected: Boolean = false,
     val bindingDied: Boolean = false,
     val unbindCalls: Int = 0,
-)
+    val role: String? = null,
+    val declaredName: String? = null,
+    val requiredPermission: String? = null,
+    val bindFlag: String = "BIND_AUTO_CREATE",
+    val binderAlive: Boolean? = null,
+    val descriptorReadMillis: Long? = null,
+    val descriptorErrorClass: String? = null,
+    val descriptorErrorMessage: String? = null,
+) {
+    /** "null", "alive", "not alive" or "unknown"; never infers a binder from a label. */
+    val binderLabel: String
+        get() = when {
+            outcome == PcsBindOutcome.NULL_BINDING -> "null (no binder)"
+            binderAlive == true -> "alive"
+            binderAlive == false -> "not alive"
+            else -> "unknown"
+        }
+}
 
 /** The outcome of resolving the PCS settings activity for a one-tap launch. */
 data class PcsSettingsResolution(
@@ -36,11 +73,50 @@ data class PcsSettingsResolution(
     val detail: String,
 )
 
+/** One launch control candidate, built from runtime component facts only. */
+data class PcsActivityTarget(
+    val label: String,
+    val className: String,
+    val declared: Boolean,
+    val exported: Boolean,
+    val effectivelyEnabled: Boolean?,
+    val requiredPermission: String?,
+    /** True only when the definition allows it, it is exported, enabled and permission-free. */
+    val launchable: Boolean,
+    /** Why it is not launchable, or the explicit-tap-only note when it is. */
+    val detail: String,
+)
+
+enum class PcsLaunchOutcome(val label: String) {
+    LAUNCHED("launched"),
+    NOT_ATTEMPTED("not attempted"),
+    NOT_RESOLVED("not resolved"),
+    ACTIVITY_NOT_FOUND("ActivityNotFoundException"),
+    SECURITY_EXCEPTION("SecurityException"),
+    ERROR("other error"),
+}
+
+data class PcsActivityLaunchResult(
+    val label: String,
+    val className: String,
+    val resolved: Boolean,
+    val outcome: PcsLaunchOutcome,
+    val exceptionClass: String? = null,
+    val exceptionMessage: String? = null,
+    val elapsedMillis: Long? = null,
+) {
+    val outcomeLabel: String get() = outcome.label
+}
+
 /** Static facts about one PCS component, always read through `PackageManager`. */
 data class PcsSurface(
     val packageVisible: Boolean,
     val exportedComponents: List<ComponentFacts>,
     val settings: PcsSettingsResolution,
+    /** False when the read never returned component lists; an empty list is not proof. */
+    val componentsRead: Boolean = true,
+    val componentsReadDetail: String? = null,
+    val launchTargets: List<PcsActivityTarget> = emptyList(),
 ) {
     val visibilityLimited: Boolean get() = !packageVisible
 }
@@ -109,23 +185,56 @@ class PcsBindSession(
             ),
         )
 
-    fun onServiceConnected(
+    /**
+     * A real binder arrived. The descriptor read is a separate, guarded step: a failed
+     * read keeps [PcsBindOutcome.BINDER_RETURNED] and records its own class, and an
+     * empty descriptor is kept as the empty string.
+     */
+    fun onBinderConnected(
         interfaceDescriptor: String?,
+        descriptorReadMillis: Long,
+        descriptorErrorClass: String?,
+        descriptorErrorMessage: String?,
+        binderAlive: Boolean?,
         nowMillis: Long,
     ): PcsBindResult? =
         complete(
             PcsBindResult(
                 componentName = componentName,
-                outcome = if (interfaceDescriptor == null) {
-                    PcsBindOutcome.NULL_BINDING
-                } else {
-                    PcsBindOutcome.BINDER_RETURNED
-                },
+                outcome = PcsBindOutcome.BINDER_RETURNED,
                 interfaceDescriptor = interfaceDescriptor,
+                binderAlive = binderAlive,
+                descriptorReadMillis = descriptorReadMillis,
+                descriptorErrorClass = descriptorErrorClass,
+                descriptorErrorMessage = descriptorErrorMessage,
                 elapsedMillis = elapsed(nowMillis),
                 serviceDisconnected = serviceDisconnected,
             ),
         )
+
+    /** Compatibility helper for a descriptor-only callback; null means no binder. */
+    fun onServiceConnected(
+        interfaceDescriptor: String?,
+        nowMillis: Long,
+    ): PcsBindResult? = if (interfaceDescriptor == null) {
+        complete(
+            PcsBindResult(
+                componentName = componentName,
+                outcome = PcsBindOutcome.NULL_BINDING,
+                elapsedMillis = elapsed(nowMillis),
+                serviceDisconnected = serviceDisconnected,
+            ),
+        )
+    } else {
+        onBinderConnected(
+            interfaceDescriptor = interfaceDescriptor,
+            descriptorReadMillis = 0L,
+            descriptorErrorClass = null,
+            descriptorErrorMessage = null,
+            binderAlive = null,
+            nowMillis = nowMillis,
+        )
+    }
 
     fun onNullBinding(nowMillis: Long): PcsBindResult? =
         complete(

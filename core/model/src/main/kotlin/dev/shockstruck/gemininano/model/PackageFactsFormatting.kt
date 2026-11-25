@@ -9,6 +9,7 @@ object PackageFactsFormatting {
     const val UNKNOWN = "unknown"
     const val NOT_VISIBLE = "not visible (not installed, or hidden by package visibility)"
     const val NONE = "none"
+    const val NOT_READ = "not read"
 
     /** Distinguishes a visibility limit from a read error; neither is "absent". */
     fun visibilityLabel(facts: PackageFacts): String = when (facts.visibility) {
@@ -40,6 +41,7 @@ object PackageFactsFormatting {
 
     fun signingLabel(facts: PackageFacts): String = when {
         !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
+        !facts.readCoverage.signers -> NOT_READ
         facts.signingSha256.isEmpty() -> UNKNOWN
         else -> facts.signingSha256.joinToString(", ")
     }
@@ -58,8 +60,30 @@ object PackageFactsFormatting {
 
     fun requestedPermissionsLabel(facts: PackageFacts): String = when {
         !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
+        !facts.readCoverage.permissions -> NOT_READ
         facts.requestedPermissions.isEmpty() -> NONE
         else -> facts.requestedPermissions.size.toString()
+    }
+
+    fun componentsLabel(facts: PackageFacts): String = when {
+        !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
+        !facts.readCoverage.components -> NOT_READ
+        facts.components.isEmpty() -> NONE
+        else -> facts.components.size.toString()
+    }
+
+    fun metadataLabel(facts: PackageFacts): String = when {
+        !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
+        !facts.readCoverage.metadata -> NOT_READ
+        facts.metadata.isEmpty() -> NONE
+        else -> facts.metadata.size.toString()
+    }
+
+    fun installTimesLabel(facts: PackageFacts): String = when {
+        !facts.visible -> unreadLabel(facts) ?: NOT_VISIBLE
+        facts.firstInstallTime == null && facts.lastUpdateTime == null -> UNKNOWN
+        else -> "firstInstall=" + (facts.firstInstallTime?.toString() ?: UNKNOWN) +
+            " · lastUpdate=" + (facts.lastUpdateTime?.toString() ?: UNKNOWN)
     }
 
     fun renderPermissionGrant(grant: PermissionGrantFacts): String =
@@ -71,7 +95,9 @@ object PackageFactsFormatting {
         parts += component.className
         parts += "exported=${component.exported}"
         parts += "enabled=${component.enabled}"
-        parts += "effectiveEnabled=${component.effectivelyEnabled}"
+        parts += "manifestEffectiveEnabled=${component.manifestEffectiveEnabled}"
+        parts += "runtimeEnabledSetting=${ComponentEnabledSetting.label(component.runtimeEnabledSetting)}"
+        parts += "effectiveEnabled=${component.effectivelyEnabled ?: "unknown"}"
         parts += "permission=${component.requiredPermission ?: NONE}"
         if (component.authorities.isNotEmpty()) {
             parts += "authorities=${component.authorities.joinToString(",")}"

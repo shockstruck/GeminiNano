@@ -4,8 +4,10 @@ import android.content.Context
 import android.os.Build
 import dev.shockstruck.gemininano.core.android.AndroidPackageInspector
 import dev.shockstruck.gemininano.core.android.PackageCatalog
+import dev.shockstruck.gemininano.core.android.PcsActivityLauncher
 import dev.shockstruck.gemininano.core.android.PcsSurfaceInspector
 import dev.shockstruck.gemininano.core.android.PermissionMatrixProbe
+import dev.shockstruck.gemininano.core.android.SystemFeatureFacts
 import dev.shockstruck.gemininano.core.android.SafeBindProbe
 import dev.shockstruck.gemininano.core.genai.MlKitFeatureSuite
 import dev.shockstruck.gemininano.core.genai.MlKitPromptProbe
@@ -26,6 +28,7 @@ import dev.shockstruck.gemininano.model.BuildFacts
 import dev.shockstruck.gemininano.model.DiagnosticSnapshot
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
+import dev.shockstruck.gemininano.model.PackageReadCoverage
 import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PromptProbe
 import dev.shockstruck.gemininano.model.SummarizationProbe
@@ -55,6 +58,10 @@ class AppGraph(context: Context) {
     val pcsSurfaceInspector = PcsSurfaceInspector(appContext)
 
     val safeBindProbe = SafeBindProbe(appContext)
+
+    val pcsActivityLauncher = PcsActivityLauncher(appContext)
+
+    val systemFeatureFacts = SystemFeatureFacts(appContext)
 
     val summarizationProbe: SummarizationProbe =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -134,5 +141,9 @@ class AppGraph(context: Context) {
     )
 
     private fun invisible(packageName: String) =
-        PackageFacts(packageName = packageName, visibility = PackageVisibility.NOT_VISIBLE)
+        PackageFacts(
+            packageName = packageName,
+            visibility = PackageVisibility.NOT_VISIBLE,
+            coverage = PackageReadCoverage.NONE,
+        )
 }

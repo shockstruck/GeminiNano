@@ -73,6 +73,10 @@ class ProvisioningDiagnosticsPresenter {
             "PCS PCC = unknown: reading the PCS package failed; see the recorded error class " +
                 "and message."
 
+        PermissionStatus.NOT_READ ->
+            "PCS PCC = unknown: the reduced package read did not return permissions, so " +
+                "requested state cannot be concluded."
+
         PermissionStatus.UNKNOWN ->
             "PCS PCC = requested · unknown: neither grant source returned a definitive state."
     }
@@ -114,7 +118,7 @@ class ProvisioningDiagnosticsPresenter {
     private fun bindLine(results: List<PcsBindResult>): String {
         if (results.isEmpty()) return "PCS bind probe has not run yet."
         val grpc = results.firstOrNull {
-            it.componentName.endsWith("PcsGrpcService")
+            it.role == "grpc" || it.componentName.endsWith("GrpcService")
         }
         return when (grpc?.outcome) {
             PcsBindOutcome.SECURITY_EXCEPTION -> {
@@ -136,11 +140,34 @@ class ProvisioningDiagnosticsPresenter {
                     "so the cause is not identified."
 
             PcsBindOutcome.BINDER_RETURNED ->
-                "PCS bind binder returned: the OS association permits; the next suspect is the " +
-                    "gRPC policy/API key, not the OS."
+                "PCS bind binder returned: this app's own bind attempt received a binder" +
+                    (grpc.interfaceDescriptor?.let { " (descriptor \"$it\")" } ?: "") +
+                    ". It does not prove or describe AICore's access to PCS."
 
             PcsBindOutcome.NULL_BINDING ->
-                "PCS bind null binding: the component is disabled or returned no binder."
+                "PCS bind delivered no binder (null binding); the cause is not identified."
+
+            PcsBindOutcome.NOT_RUN ->
+                "PCS bind is planned for the gRPC service but has not run; it runs only on " +
+                    "your explicit tap."
+
+            PcsBindOutcome.NOT_DECLARED ->
+                "The installed PCS package does not declare the gRPC service this catalogue " +
+                    "knows about; no bind was attempted."
+
+            PcsBindOutcome.NOT_READ ->
+                "PCS components were not read on this reduced package read; no bind was attempted."
+
+            PcsBindOutcome.NOT_ENABLED ->
+                "The gRPC service is declared but not effectively enabled; no bind was attempted."
+
+            PcsBindOutcome.ENABLED_UNKNOWN ->
+                "The gRPC service is declared but its effective enabled state could not be read; " +
+                    "no bind was attempted."
+
+            PcsBindOutcome.REQUIRES_PERMISSION ->
+                "The gRPC service is declared but requires " +
+                    (grpc.requiredPermission ?: "a permission") + "; no bind was attempted."
 
             PcsBindOutcome.TIMEOUT ->
                 "PCS bind timed out: the system accepted the bind but no callback arrived within " +
@@ -153,7 +180,7 @@ class ProvisioningDiagnosticsPresenter {
                 "PCS binding died during the probe; the transport is not stable for this app."
 
             PcsBindOutcome.NOT_EXPORTED ->
-                "PCS gRPC service was not returned as exported at runtime; no bind was attempted."
+                "The gRPC service is declared but not exported; no bind was attempted."
 
             null -> "PCS bind results do not include the gRPC service."
         }

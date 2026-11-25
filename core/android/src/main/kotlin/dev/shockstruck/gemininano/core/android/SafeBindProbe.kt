@@ -8,9 +8,10 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import dev.shockstruck.gemininano.model.ComponentFacts
-import dev.shockstruck.gemininano.model.ComponentKind
+import dev.shockstruck.gemininano.model.PcsBindCandidate
+import dev.shockstruck.gemininano.model.PcsBindEligibility
 import dev.shockstruck.gemininano.model.PcsBindOutcome
+import dev.shockstruck.gemininano.model.PcsBindPlan
 import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PcsBindSession
 import dev.shockstruck.gemininano.model.PlatformPrincipals
@@ -19,38 +20,39 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 /**
- * One `bindService(BIND_AUTO_CREATE)` per fixed component with a three-second wait,
+ * One `bindService(BIND_AUTO_CREATE)` per eligible service with a three-second wait,
  * then `unbindService` exactly once. It never sends a binder transaction, never builds
- * an AIDL stub, never uses reflection and never calls a service method; only the
- * framework's own `ServiceConnection` callbacks are observed.
+ * an AIDL stub, never uses reflection or `asInterface`, and never calls a service
+ * method; only the framework's own `ServiceConnection` callbacks are observed.
+ *
+ * The bind is always this app's own attempt. A returned binder says nothing about
+ * AICore's access to PCS.
  */
 class SafeBindProbe(
     private val context: Context,
     private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
 ) {
 
-    suspend fun probeAll(exported: List<ComponentFacts>): List<PcsBindResult> {
-        val exportedServices = exported
-            .filter { it.kind == ComponentKind.SERVICE && it.exported }
-            .map { it.className }
-            .toSet()
-        return PcsSurfaceCatalog.BIND_SERVICES.map { serviceName ->
-            if (serviceName !in exportedServices) {
-                PcsBindResult(
-                    componentName = serviceName,
-                    outcome = PcsBindOutcome.NOT_EXPORTED,
-                    exceptionMessage =
-                        "PackageManager did not return this service as exported at runtime; no bind attempted.",
-                )
-            } else {
-                probe(serviceName)
-            }
+    /**
+     * Runs the eligible binds in plan order once each. Non-eligible plan entries and
+     * entries when components were not read produce their static result and are never
+     * bound.
+     */
+    suspend fun probeAll(plan: PcsBindPlan): List<PcsBindResult> = plan.candidates.map { candidate ->
+        if (candidate.eligibility == PcsBindEligibility.ELIGIBLE) {
+            probe(candidate)
+        } else {
+            candidate.projectedResult()
         }
     }
 
-    suspend fun probe(serviceName: String): PcsBindResult {
+    suspend fun probe(serviceName: String): PcsBindResult =
+        probe(PcsBindCandidate(definition = null, className = serviceName, eligibility = PcsBindEligibility.ELIGIBLE))
+
+    private suspend fun probe(candidate: PcsBindCandidate): PcsBindResult {
+        val serviceName = candidate.declaredName ?: candidate.className
         val session = PcsBindSession(serviceName, SystemClock.elapsedRealtime())
-        return suspendCoroutine { continuation ->
+        val result = suspendCoroutine { continuation ->
             val finished = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             var connection: ServiceConnection? = null
@@ -70,9 +72,31 @@ class SafeBindProbe(
 
             val serviceConnection = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                    if (service == null) {
+                        finish(session.onNullBinding(SystemClock.elapsedRealtime()))
+                        return
+                    }
+                    val descriptorStart = SystemClock.elapsedRealtime()
+                    var descriptor: String? = null
+                    var descriptorError: Throwable? = null
+                    try {
+                        descriptor = service.interfaceDescriptor
+                    } catch (t: Throwable) {
+                        descriptorError = t
+                    }
+                    val descriptorMillis = SystemClock.elapsedRealtime() - descriptorStart
+                    val binderAlive = try {
+                        service.isBinderAlive
+                    } catch (t: Throwable) {
+                        null
+                    }
                     finish(
-                        session.onServiceConnected(
-                            interfaceDescriptor = service?.interfaceDescriptor,
+                        session.onBinderConnected(
+                            interfaceDescriptor = descriptor,
+                            descriptorReadMillis = descriptorMillis,
+                            descriptorErrorClass = descriptorError?.javaClass?.name,
+                            descriptorErrorMessage = descriptorError?.message,
+                            binderAlive = binderAlive,
                             nowMillis = SystemClock.elapsedRealtime(),
                         ),
                     )
@@ -125,6 +149,11 @@ class SafeBindProbe(
             timeout = Runnable { finish(session.onTimeout(SystemClock.elapsedRealtime())) }
                 .also { handler.postDelayed(it, timeoutMillis) }
         }
+        return result.copy(
+            role = candidate.roleLabel,
+            declaredName = serviceName,
+            requiredPermission = candidate.requiredPermission,
+        )
     }
 
     companion object {

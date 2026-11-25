@@ -1,6 +1,7 @@
 package dev.shockstruck.gemininano.testing
 
 import dev.shockstruck.gemininano.model.BuildFacts
+import dev.shockstruck.gemininano.model.ComponentEnabledSetting
 import dev.shockstruck.gemininano.model.ComponentFacts
 import dev.shockstruck.gemininano.model.ComponentKind
 import dev.shockstruck.gemininano.model.DiagnosticEvent
@@ -11,6 +12,7 @@ import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.Outcome
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
+import dev.shockstruck.gemininano.model.PackageReadCoverage
 import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PcsBindOutcome
 import dev.shockstruck.gemininano.model.PcsBindResult
@@ -77,8 +79,9 @@ object TestFixtures {
         minSdk = if (visible) minSdk else null,
         enabled = if (visible) enabled else null,
         requestedPermissions = if (visible) requestedPermissions else emptyList(),
-        permissionGrants = permissionGrants,
-        components = components,
+        permissionGrants = if (visible) permissionGrants else emptyList(),
+        components = if (visible) components else emptyList(),
+        coverage = if (visible) PackageReadCoverage.FULL else PackageReadCoverage.NONE,
     )
 
     fun probeResult(
@@ -129,11 +132,18 @@ object TestFixtures {
         className: String = "com.example.ExportActivity",
         exported: Boolean = true,
         requiredPermission: String? = null,
+        enabled: Boolean = true,
+        runtimeEnabledSetting: Int? = ComponentEnabledSetting.DEFAULT,
+        effectivelyEnabled: Boolean? = true,
     ) = ComponentFacts(
         kind = kind,
         className = className,
         exported = exported,
         requiredPermission = requiredPermission,
+        enabled = enabled,
+        manifestEffectiveEnabled = enabled,
+        runtimeEnabledSetting = runtimeEnabledSetting,
+        effectivelyEnabled = effectivelyEnabled,
     )
 
     private fun matrixFacts(

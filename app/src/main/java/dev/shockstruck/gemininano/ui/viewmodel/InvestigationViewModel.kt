@@ -8,6 +8,7 @@ import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReport
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReportBuilder
 import dev.shockstruck.gemininano.diagnostics.ProvisioningDecision
 import dev.shockstruck.gemininano.diagnostics.ProvisioningEvidence
+import dev.shockstruck.gemininano.diagnostics.ReportFreshness
 import dev.shockstruck.gemininano.model.DownloadResult
 import dev.shockstruck.gemininano.model.FeatureDownloadProgress
 import dev.shockstruck.gemininano.model.FeatureMatrixFormatting
@@ -21,8 +22,13 @@ import dev.shockstruck.gemininano.model.OfflineInferenceFormatting
 import dev.shockstruck.gemininano.model.OfflineInferencePlanning
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
 import dev.shockstruck.gemininano.model.Outcome
+import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
+import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
+import dev.shockstruck.gemininano.model.PcsBindCatalog
+import dev.shockstruck.gemininano.model.PcsBindPlan
 import dev.shockstruck.gemininano.model.PcsBindResult
+import dev.shockstruck.gemininano.model.PcsLaunchOutcome
 import dev.shockstruck.gemininano.model.PcsSurface
 import dev.shockstruck.gemininano.model.PermissionMatrix
 import dev.shockstruck.gemininano.model.PermissionMatrixFormatting
@@ -48,9 +54,13 @@ data class InvestigationUiState(
     val promptDownloadConfig: PromptModelConfig? = null,
     val promptDownloadText: String? = null,
     val promptMessage: String? = null,
+    val bindPlan: PcsBindPlan? = null,
     val bindResults: List<PcsBindResult> = emptyList(),
     val bindBusy: Boolean = false,
     val bindMessage: String? = null,
+    val launchResults: List<PcsActivityLaunchResult> = emptyList(),
+    val launchBusy: Boolean = false,
+    val launchMessage: String? = null,
     val decision: ProvisioningDecision? = null,
     val features: List<FeatureProbeResult> = emptyList(),
     val featureBusy: Boolean = false,
@@ -64,6 +74,7 @@ data class InvestigationUiState(
     val fullReport: FullDiagnosticsReport? = null,
     val fullReportBusy: Boolean = false,
     val fullReportMessage: String? = null,
+    val lastObservationAtEpochMillis: Long? = null,
 ) {
     fun promptStatus(config: PromptModelConfig): PromptConfigStatus? =
         prompt.firstOrNull { it.config == config }
@@ -78,8 +89,17 @@ data class InvestigationUiState(
         get() = OfflineInferencePlanning.eligibleCount(features)
 
     val anyProbeBusy: Boolean
-        get() = loading || promptBusy || promptDownloadConfig != null || bindBusy ||
+        get() = loading || promptBusy || promptDownloadConfig != null || bindBusy || launchBusy ||
             featureBusy || featureDownload != null || offlineBusy || fullReportBusy
+
+    val eligibleBindCount: Int
+        get() = bindPlan?.eligibleCount ?: 0
+
+    val reportStale: Boolean
+        get() = ReportFreshness.isStale(
+            reportGeneratedAtEpochMillis = fullReport?.generatedAtEpochMillis,
+            lastObservationAtEpochMillis = lastObservationAtEpochMillis,
+        )
 }
 
 /**
@@ -119,7 +139,17 @@ class InvestigationViewModel(
             val surface = withContext(Dispatchers.IO) {
                 graph.pcsSurfaceInspector.inspect(pcs)
             }
-            _state.update { it.copy(loading = false, matrix = matrix, surface = surface) }
+            val plan = PcsBindCatalog.plan(pcs)
+            _state.update {
+                it.copy(
+                    loading = false,
+                    matrix = matrix,
+                    surface = surface,
+                    bindPlan = plan,
+                    bindResults = plan.projectedResults(),
+                    bindMessage = bindPlanMessage(plan),
+                )
+            }
             logMatrix(matrix)
             logSurface(surface)
             probePromptInternal()
@@ -297,7 +327,20 @@ class InvestigationViewModel(
             val surface = withContext(Dispatchers.IO) {
                 graph.pcsSurfaceInspector.inspect(pcs)
             }
-            _state.update { it.copy(matrix = matrix, surface = surface) }
+            val plan = PcsBindCatalog.plan(pcs)
+            _state.update { current ->
+                val attempted = current.bindResults
+                    .filter { it.outcome.attempted }
+                    .associateBy { it.componentName }
+                current.copy(
+                    matrix = matrix,
+                    surface = surface,
+                    bindPlan = plan,
+                    bindResults = plan.projectedResults().map { projected ->
+                        attempted[projected.componentName] ?: projected
+                    },
+                )
+            }
             logMatrix(matrix)
             logSurface(surface)
 
@@ -308,6 +351,9 @@ class InvestigationViewModel(
             }
             graph.probeCache.store(summarization)
 
+            val systemFeatures = withContext(Dispatchers.IO) {
+                graph.systemFeatureFacts.read()
+            }
             val now = System.currentTimeMillis()
             val snapshot = _state.value
             val report = reportBuilder.build(
@@ -323,6 +369,9 @@ class InvestigationViewModel(
                     offline = snapshot.offline,
                     events = graph.diagnosticBus.snapshot(),
                     packages = inspected,
+                    launchResults = snapshot.launchResults,
+                    systemFeatures = systemFeatures.names,
+                    systemFeatureReadError = systemFeatures.readErrorLabel,
                 ),
             )
             graph.diagnosticBus.log(
@@ -339,30 +388,75 @@ class InvestigationViewModel(
                     fullReportBusy = false,
                     fullReport = report,
                     fullReportMessage = "Report ready. Export it as JSON or text; no download or bind was performed.",
+                    lastObservationAtEpochMillis = null,
                 )
             }
             recomputeDecision()
         }
     }
 
-    /** One bind per fixed service, only when the user asks. */
+    /** One bind per eligible service, only when the user asks. */
     fun runBindProbe() {
-        if (_state.value.bindBusy) return
+        val plan = _state.value.bindPlan ?: return
+        if (_state.value.bindBusy || plan.eligibleCount == 0) return
         viewModelScope.launch {
             _state.update { it.copy(bindBusy = true, bindMessage = null) }
-            val exported = _state.value.surface?.exportedComponents.orEmpty()
-            val results = graph.safeBindProbe.probeAll(exported)
+            val results = graph.safeBindProbe.probeAll(plan)
             results.forEach { logBind(it) }
             _state.update {
                 it.copy(
                     bindBusy = false,
                     bindResults = results,
                     bindMessage = "Bind probe finished: ${results.count { r -> r.outcome == PcsBindOutcome.BINDER_RETURNED }} " +
-                        "of ${results.size} returned a binder; every accepted bind was unbound once.",
+                        "of ${plan.eligibleCount} eligible services returned a binder; every accepted bind " +
+                        "was unbound once. These are this app's own results, not AICore's access.",
+                    lastObservationAtEpochMillis = System.currentTimeMillis(),
                 )
             }
             recomputeDecision()
         }
+    }
+
+    /** Launches one PCS activity from an explicit user tap and records the outcome. */
+    fun launchActivity(target: PcsActivityTarget) {
+        if (_state.value.launchBusy) return
+        viewModelScope.launch {
+            _state.update { it.copy(launchBusy = true, launchMessage = null) }
+            val result = graph.pcsActivityLauncher.launch(target)
+            logLaunch(result)
+            _state.update { current ->
+                current.copy(
+                    launchBusy = false,
+                    launchResults = current.launchResults.filterNot {
+                        it.className == result.className
+                    } + result,
+                    launchMessage = when (result.outcome) {
+                        PcsLaunchOutcome.LAUNCHED ->
+                            "${result.label} launched from your tap; nothing is read back from its screen."
+
+                        PcsLaunchOutcome.NOT_ATTEMPTED ->
+                            "${result.label}: not launched (${result.exceptionMessage ?: "not launchable"})."
+
+                        else -> "${result.label}: ${result.outcome.label}" +
+                            (result.exceptionClass?.let { " ($it)" } ?: "") +
+                            (result.exceptionMessage?.let { ": $it" } ?: "")
+                    },
+                    lastObservationAtEpochMillis = System.currentTimeMillis(),
+                )
+            }
+        }
+    }
+
+    private fun bindPlanMessage(plan: PcsBindPlan): String = when {
+        !plan.componentsRead ->
+            "PCS components were not read; each bind row is NOT READ and none was attempted."
+
+        plan.eligibleCount == 0 ->
+            "No PCS service is eligible; every row is NOT RUN or reports why no bind was attempted."
+
+        else ->
+            "${plan.eligibleCount} PCS service(s) are eligible. Each row is NOT RUN until you tap the bind button; " +
+                "a result would be this app's own bind, not AICore's access."
     }
 
     fun exportManager(): dev.shockstruck.gemininano.data.LogExportManager = graph.logExportManager()
@@ -425,12 +519,17 @@ class InvestigationViewModel(
     }
 
     private fun logSurface(surface: PcsSurface) {
-        val message = if (!surface.packageVisible) {
-            "PCS is not visible: exported surface cannot be enumerated (visibility limit, not absence)."
-        } else {
-            "Exported components: ${surface.exportedComponents.size}. " +
-                "Settings: ${if (surface.settings.resolved) surface.settings.activityName else "not resolved"}. " +
-                "Job-bound services (static only): ${surface.exportedComponents.count { it.requiredPermission == "android.permission.BIND_JOB_SERVICE" }}."
+        val message = when {
+            !surface.packageVisible ->
+                "PCS is not visible: exported surface cannot be enumerated (visibility limit, not absence)."
+
+            !surface.componentsRead ->
+                "PCS components were not read: ${surface.componentsReadDetail ?: "reduced package read"}."
+
+            else ->
+                "Exported components: ${surface.exportedComponents.size}. " +
+                    "Settings: ${if (surface.settings.resolved) surface.settings.activityName else "not resolved"}. " +
+                    "Job-bound services (static only): ${surface.exportedComponents.count { it.requiredPermission == "android.permission.BIND_JOB_SERVICE" }}."
         }
         graph.diagnosticBus.log(
             component = COMPONENT_PCS,
@@ -535,9 +634,9 @@ class InvestigationViewModel(
     }
 
     private fun logBind(result: PcsBindResult) {
-        val outcome = when (result.outcome) {
-            PcsBindOutcome.BINDER_RETURNED -> Outcome.SUCCESS
-            PcsBindOutcome.NOT_EXPORTED -> Outcome.SKIPPED
+        val outcome = when {
+            result.outcome == PcsBindOutcome.BINDER_RETURNED -> Outcome.SUCCESS
+            !result.outcome.attempted -> Outcome.SKIPPED
             else -> Outcome.FAILURE
         }
         graph.diagnosticBus.log(
@@ -545,12 +644,35 @@ class InvestigationViewModel(
             operation = OPERATION_BIND,
             outcome = outcome,
             severity = if (outcome == Outcome.FAILURE) Severity.WARN else Severity.INFO,
-            exceptionClass = result.exceptionClass,
-            message = "component=${result.componentName} outcome=${result.outcome.label} " +
+            exceptionClass = result.exceptionClass ?: result.descriptorErrorClass,
+            message = "component=${result.componentName} role=${result.role ?: "extra"} " +
+                "outcome=${result.outcome.label} attempted=${result.outcome.attempted} " +
+                "bindFlag=${result.bindFlag} " +
                 "interface=${result.interfaceDescriptor ?: "none"} " +
+                "binderAlive=${result.binderAlive ?: "unknown"} " +
                 "unbindCalls=${result.unbindCalls} " +
                 (result.exceptionMessage?.let { "message=$it " } ?: ""),
             featureId = result.componentName,
+            durationMillis = result.elapsedMillis,
+        )
+    }
+
+    private fun logLaunch(result: PcsActivityLaunchResult) {
+        val outcome = when (result.outcome) {
+            PcsLaunchOutcome.LAUNCHED -> Outcome.SUCCESS
+            PcsLaunchOutcome.NOT_ATTEMPTED -> Outcome.SKIPPED
+            else -> Outcome.FAILURE
+        }
+        graph.diagnosticBus.log(
+            component = COMPONENT_PCS,
+            operation = OPERATION_LAUNCH,
+            outcome = outcome,
+            severity = if (outcome == Outcome.FAILURE) Severity.WARN else Severity.INFO,
+            exceptionClass = result.exceptionClass,
+            message = "activity=${result.className} outcome=${result.outcomeLabel} " +
+                "resolved=${result.resolved} " +
+                (result.exceptionMessage?.let { "message=$it " } ?: ""),
+            featureId = result.className,
             durationMillis = result.elapsedMillis,
         )
     }
@@ -582,6 +704,7 @@ class InvestigationViewModel(
         const val OPERATION_DOWNLOAD = "downloadPrompt"
         const val OPERATION_SURFACE = "inspectSurface"
         const val OPERATION_BIND = "bindService"
+        const val OPERATION_LAUNCH = "launchActivity"
         const val OPERATION_FEATURE_PROBE = "probeFeature"
         const val OPERATION_FEATURE_DOWNLOAD = "downloadFeature"
         const val OPERATION_INFERENCE = "runInference"

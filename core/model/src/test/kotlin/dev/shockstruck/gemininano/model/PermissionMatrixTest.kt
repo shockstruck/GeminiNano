@@ -188,6 +188,20 @@ class PermissionMatrixTest {
     }
 
     @Test
+    fun permissionsNotReadIsNotReportedAsNotRequested() {
+        val result = matrix(
+            pcs = PackageFacts(
+                packageName = PlatformPrincipals.PCS,
+                visibility = PackageVisibility.VISIBLE,
+                coverage = PackageReadCoverage(permissions = false),
+            ),
+        )
+        val pcc = result.cell(PlatformPrincipals.PCS, PlatformPermissions.PCC)!!
+        assertEquals(PermissionStatus.NOT_READ, pcc.status)
+        assertEquals("unknown (permissions not read)", PermissionMatrixFormatting.renderCell(pcc))
+    }
+
+    @Test
     fun aReadErrorIsNeverReportedAsNotVisible() {
         val result = matrix(
             pcs = PackageFacts(
