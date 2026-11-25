@@ -76,6 +76,8 @@ class InstalledCodeInstruction internal constructor(
     val constKind: InstalledCodeConstKind,
     val constIntValue: Int,
     val constStringIndex: Int,
+    val branchOffsetUnits: Int,
+    val switchPayloadUnits: Int,
     val isPayload: Boolean,
 )
 
@@ -86,6 +88,12 @@ class InstalledCodeInstruction internal constructor(
  * [InstalledCodeFormatException], as is any structure whose offsets, sizes or indices
  * fall outside the file. The checksum and signature fields are not verified, because
  * `classes*.dex` entries copied from an installed APK are read, not executed.
+ *
+ * Alignment follows the DEX format specification: sections (link, string_ids,
+ * type_ids, proto_ids, field_ids, method_ids, class_defs and data) and the map list
+ * must be four-byte offset-aligned (constraints G7); `type_list` (interfaces and proto
+ * parameters), `annotations_directory_item` and `code_item` are four-byte aligned;
+ * `class_data_item` and `encoded_array_item` (static values) are byte-aligned.
  *
  * Strings are decoded on demand. Nothing outside the tables, decoded strings and code
  * items is exposed, and no bytecode is retained after the caller drops this object.
@@ -207,6 +215,101 @@ class InstalledCodeDex private constructor(
             limit = header.limit,
         )
 
+    /** Every instruction address a branch or switch in [codeItem] can target. */
+    fun branchTargets(codeItem: InstalledCodeCodeItem): IntArray {
+        val targets = sortedSetOf<Int>()
+        val iterator = instructions(codeItem)
+        while (iterator.hasNext()) {
+            val instruction = iterator.next()
+            if (!instruction.isBranch || instruction.isPayload) continue
+            when (instruction.opcode) {
+                0x28, 0x29, 0x2a, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+                0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d,
+                -> {
+                    val target = instruction.addressUnits + instruction.branchOffsetUnits
+                    requireCodeAddress(target, codeItem)
+                    targets += target
+                }
+
+                0x2b, 0x2c -> switchTargets(codeItem, instruction).forEach { target ->
+                    requireCodeAddress(target, codeItem)
+                    targets += target
+                }
+            }
+        }
+        return targets.toIntArray()
+    }
+
+    /** Every exception handler address declared by [codeItem]'s try items. */
+    fun handlerAddresses(codeItem: InstalledCodeCodeItem): IntArray {
+        if (codeItem.triesSize == 0) return IntArray(0)
+        val instructionsEnd = codeItem.offset.toLong() + CODE_ITEM_HEADER_SIZE +
+            codeItem.instructionUnits.toLong() * 2
+        val triesStart = align4(instructionsEnd)
+        val triesLength = codeItem.triesSize.toLong() * TRY_ITEM_SIZE
+        requireRange(triesStart, triesLength, "try items")
+        val handlersStart = triesStart + triesLength
+        val offsets = sortedSetOf<Int>()
+        for (index in 0 until codeItem.triesSize) {
+            offsets += readShort((triesStart + index.toLong() * TRY_ITEM_SIZE + 6).toInt())
+        }
+        val addresses = sortedSetOf<Int>()
+        for (offset in offsets) {
+            val cursor = Cursor(handlersStart.toInt() + offset)
+            val size = sleb128(cursor)
+            val pairs = if (size <= 0) -size else size
+            repeat(pairs) {
+                uleb128(cursor)
+                addresses += uleb128(cursor)
+            }
+            if (size <= 0) addresses += uleb128(cursor)
+        }
+        for (address in addresses) requireCodeAddress(address, codeItem)
+        return addresses.toIntArray()
+    }
+
+    private fun switchTargets(
+        codeItem: InstalledCodeCodeItem,
+        instruction: InstalledCodeInstruction,
+    ): List<Int> {
+        val payload = instruction.addressUnits + instruction.switchPayloadUnits
+        val identity = codeUnit(codeItem, payload)
+        val size = codeUnit(codeItem, payload + 1)
+        val targets = ArrayList<Int>(size)
+        when (identity) {
+            0x0100 -> repeat(size) { index ->
+                val low = codeUnit(codeItem, payload + 4 + index * 2)
+                val high = codeUnit(codeItem, payload + 5 + index * 2)
+                targets += instruction.addressUnits + (low or (high shl 16))
+            }
+
+            0x0200 -> {
+                val targetsStart = payload + 2 + size * 2
+                repeat(size) { index ->
+                    val low = codeUnit(codeItem, targetsStart + index * 2)
+                    val high = codeUnit(codeItem, targetsStart + index * 2 + 1)
+                    targets += instruction.addressUnits + (low or (high shl 16))
+                }
+            }
+
+            else -> throw format(
+                "switch at ${instruction.addressUnits} points at payload identity 0x${identity.toString(16)}",
+            )
+        }
+        return targets
+    }
+
+    private fun codeUnit(codeItem: InstalledCodeCodeItem, address: Int): Int {
+        requireCodeAddress(address, codeItem)
+        return readShort(codeItem.offset + CODE_ITEM_HEADER_SIZE + address * 2)
+    }
+
+    private fun requireCodeAddress(address: Int, codeItem: InstalledCodeCodeItem) {
+        if (address < 0 || address >= codeItem.instructionUnits) {
+            throw format("code address $address is outside a code item of ${codeItem.instructionUnits} units")
+        }
+    }
+
     private data class Proto(
         val returnType: String,
         val parameterTypes: List<String>,
@@ -252,21 +355,23 @@ class InstalledCodeDex private constructor(
             uleb128(cursor)
         }
         val methods = ArrayList<InstalledCodeEncodedMethod>(methodTotal.toInt())
-        var methodIndex = 0
-        repeat(methodTotal.toInt()) {
-            methodIndex += count(uleb128(cursor), "method index difference")
-            val accessFlags = uleb128(cursor)
-            val codeOffset = count(uleb128(cursor), "code offset")
-            if (methodIndex < 0 || methodIndex >= header.methodIdsSize) {
-                throw format("encoded method index $methodIndex is outside the method table")
+        for (listSize in listOf(directMethods, virtualMethods)) {
+            var methodIndex = 0
+            repeat(listSize) {
+                methodIndex += count(uleb128(cursor), "method index difference")
+                val accessFlags = uleb128(cursor)
+                val codeOffset = count(uleb128(cursor), "code offset")
+                if (methodIndex < 0 || methodIndex >= header.methodIdsSize) {
+                    throw format("encoded method index $methodIndex is outside the method table")
+                }
+                if (codeOffset != 0 && codeOffset % 4 != 0) {
+                    throw format("encoded method code at $codeOffset is not four-byte aligned")
+                }
+                if (codeOffset != 0) {
+                    requireRange(codeOffset.toLong(), CODE_ITEM_HEADER_SIZE.toLong(), "encoded method code")
+                }
+                methods += InstalledCodeEncodedMethod(methodIndex, accessFlags, codeOffset)
             }
-            if (codeOffset != 0 && codeOffset % 4 != 0) {
-                throw format("encoded method code at $codeOffset is not four-byte aligned")
-            }
-            if (codeOffset != 0) {
-                requireRange(codeOffset.toLong(), CODE_ITEM_HEADER_SIZE.toLong(), "encoded method code")
-            }
-            methods += InstalledCodeEncodedMethod(methodIndex, accessFlags, codeOffset)
         }
         return methods
     }
@@ -313,6 +418,22 @@ class InstalledCodeDex private constructor(
             if (byte and 0x80 == 0) return result
             shift += 7
             if (shift > 28) throw format("uleb128 longer than five bytes")
+        }
+    }
+
+    private fun sleb128(cursor: Cursor): Int {
+        var result = 0
+        var shift = 0
+        while (true) {
+            if (cursor.offset >= header.limit) throw format("truncated sleb128")
+            val byte = bytes[cursor.offset++].toInt() and 0xFF
+            result = result or ((byte and 0x7F) shl shift)
+            shift += 7
+            if (byte and 0x80 == 0) {
+                if (shift < 32 && byte and 0x40 != 0) result = result or (-1 shl shift)
+                return result
+            }
+            if (shift > 28) throw format("sleb128 longer than five bytes")
         }
     }
 
@@ -381,7 +502,7 @@ class InstalledCodeDex private constructor(
     )
 
     companion object {
-        private const val STRING_ID_SIZE = 8
+        private const val STRING_ID_SIZE = 4
         private const val TYPE_ID_SIZE = 4
         private const val PROTO_ID_SIZE = 12
         private const val FIELD_ID_SIZE = 8
@@ -670,13 +791,20 @@ class InstalledCodeDex private constructor(
                 for ((label, offset) in listOf(
                     "interfaces" to interfacesOffset,
                     "annotations" to annotationsOffset,
-                    "class data" to classDataOffset,
-                    "static values" to staticValuesOffset,
                 )) {
                     if (offset == 0L) continue
                     if (offset % 4 != 0L) {
                         throw InstalledCodeFormatException("class definition $index $label is not aligned")
                     }
+                    if (offset < header.headerSize || offset >= header.limit) {
+                        throw InstalledCodeFormatException("class definition $index $label is outside the file")
+                    }
+                }
+                for ((label, offset) in listOf(
+                    "class data" to classDataOffset,
+                    "static values" to staticValuesOffset,
+                )) {
+                    if (offset == 0L) continue
                     if (offset < header.headerSize || offset >= header.limit) {
                         throw InstalledCodeFormatException("class definition $index $label is outside the file")
                     }
@@ -714,12 +842,12 @@ class InstalledCodeDex private constructor(
                 0x0000 -> 1
                 0x0100 -> {
                     requireUnits(address, 2)
-                    2 + unitAt(address + 1) * 2
+                    4 + unitAt(address + 1) * 2
                 }
 
                 0x0200 -> {
                     requireUnits(address, 2)
-                    2 + unitAt(address + 1) * 3
+                    2 + unitAt(address + 1) * 4
                 }
 
                 0x0300 -> {
@@ -751,6 +879,8 @@ class InstalledCodeDex private constructor(
                 constKind = InstalledCodeConstKind.NONE,
                 constIntValue = 0,
                 constStringIndex = -1,
+                branchOffsetUnits = 0,
+                switchPayloadUnits = -1,
                 isPayload = unit0 != 0x0000,
             )
         }
@@ -773,6 +903,8 @@ class InstalledCodeDex private constructor(
             var constKind = InstalledCodeConstKind.NONE
             var constInt = 0
             var constString = -1
+            var branchOffset = 0
+            var switchPayload = -1
             val unit1 = if (size >= 2) unitAt(address + 1) else 0
             val unit2 = if (size >= 3) unitAt(address + 2) else 0
 
@@ -900,10 +1032,32 @@ class InstalledCodeDex private constructor(
                     registers = if (opcode == 0xfc) packedRegisters(unit0, unit2) else rangeRegisters(unit0, unit2)
                 }
 
-                0x28, 0x29, 0x2a, 0x2b, 0x2c,
+                0x28 -> {
+                    isBranch = true
+                    branchOffset = ((unit0 shr 8) and 0xFF).toByte().toInt()
+                }
+
+                0x29 -> {
+                    isBranch = true
+                    branchOffset = unit1.toShort().toInt()
+                }
+
+                0x2a -> {
+                    isBranch = true
+                    branchOffset = unit1 or (unit2 shl 16)
+                }
+
+                0x2b, 0x2c -> {
+                    isBranch = true
+                    switchPayload = unit1 or (unit2 shl 16)
+                }
+
                 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
                 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d,
-                -> isBranch = true
+                -> {
+                    isBranch = true
+                    branchOffset = unit1.toShort().toInt()
+                }
             }
 
             return InstalledCodeInstruction(
@@ -922,6 +1076,8 @@ class InstalledCodeDex private constructor(
                 constKind = constKind,
                 constIntValue = constInt,
                 constStringIndex = constString,
+                branchOffsetUnits = branchOffset,
+                switchPayloadUnits = switchPayload,
                 isPayload = false,
             )
         }
@@ -930,10 +1086,10 @@ class InstalledCodeDex private constructor(
             val count = (unit0 shr 12) and 0xF
             if (count == 0) return IntArray(0)
             val registers = IntArray(count)
-            registers[0] = unit2 and 0xFF
-            if (count > 1) registers[1] = (unit2 shr 8) and 0xFF
-            if (count > 2) registers[2] = (unit2 shr 16) and 0xFF
-            if (count > 3) registers[3] = (unit2 shr 24) and 0xFF
+            registers[0] = unit2 and 0xF
+            if (count > 1) registers[1] = (unit2 shr 4) and 0xF
+            if (count > 2) registers[2] = (unit2 shr 8) and 0xF
+            if (count > 3) registers[3] = (unit2 shr 12) and 0xF
             if (count > 4) registers[4] = (unit0 shr 8) and 0xF
             return registers
         }

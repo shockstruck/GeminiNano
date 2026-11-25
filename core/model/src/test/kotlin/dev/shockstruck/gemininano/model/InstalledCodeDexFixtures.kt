@@ -70,7 +70,7 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
         val headerSize = if (version >= 41) 0x78 else 0x70
         var cursor = align4(headerSize)
         val stringIdsOffset = cursor
-        cursor += strings.size * 8
+        cursor += strings.size * 4
         val typeIdsOffset = cursor
         cursor += typeStringIndices.size * 4
         val protoIdsOffset = cursor
@@ -156,7 +156,7 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
         }
 
         for (index in strings.indices) {
-            writeIntAt(bytes, stringIdsOffset + index * 8, stringDataOffsets[index])
+            writeIntAt(bytes, stringIdsOffset + index * 4, stringDataOffsets[index])
         }
         for (index in typeStringIndices.indices) {
             writeIntAt(bytes, typeIdsOffset + index * 4, typeStringIndices[index])
@@ -192,10 +192,20 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
         writeShort(output, method.registers)
         writeShort(output, 0)
         writeShort(output, 0)
-        writeShort(output, 0)
+        writeShort(output, method.tries.size)
         writeInt(output, 0)
         writeInt(output, method.instructions.size)
         for (unit in method.instructions) writeShort(output, unit)
+        if (method.tries.isEmpty()) return
+        if (method.instructions.size % 2 == 1) writeShort(output, 0)
+        for (trySpec in method.tries) {
+            writeInt(output, trySpec.startAddress)
+            writeShort(output, trySpec.insnCount)
+            writeShort(output, 0)
+        }
+        writeUleb128(output, 1)
+        writeSleb128(output, 0)
+        writeUleb128(output, method.tries.first().handlerAddress)
     }
 
     private data class ClassSpec(
@@ -208,6 +218,20 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
 
         fun pad(output: ByteArrayOutputStream, alignment: Int) {
             while (output.size() % alignment != 0) output.write(0)
+        }
+
+        fun writeSleb128(output: ByteArrayOutputStream, value: Int) {
+            var remaining = value
+            while (true) {
+                val byte = remaining and 0x7F
+                remaining = remaining shr 7
+                val signBitSet = byte and 0x40 != 0
+                if ((remaining == 0 && !signBitSet) || (remaining == -1 && signBitSet)) {
+                    output.write(byte)
+                    return
+                }
+                output.write(byte or 0x80)
+            }
         }
 
         fun writeUleb128(output: ByteArrayOutputStream, value: Int) {
@@ -275,6 +299,13 @@ internal data class MethodSpec(
     val isStatic: Boolean = true,
     val registers: Int = 16,
     val instructions: IntArray,
+    val tries: List<TrySpec> = emptyList(),
+)
+
+internal data class TrySpec(
+    val startAddress: Int,
+    val insnCount: Int,
+    val handlerAddress: Int,
 )
 
 /** Instruction encoders for the synthetic dex files. */
@@ -326,8 +357,9 @@ internal object SyntheticInsns {
     private fun invoke35c(opcode: Int, registers: IntArray, methodIndex: Int): IntArray {
         require(registers.size <= 5)
         val padded = registers + IntArray(5 - registers.size)
-        val unit0 = opcode or (registers.size shl 12) or (padded[4] shl 8)
-        val unit2 = padded[0] or (padded[1] shl 8) or (padded[2] shl 16) or (padded[3] shl 24)
+        val unit0 = opcode or (registers.size shl 12) or ((padded[4] and 0xF) shl 8)
+        val unit2 = (padded[0] and 0xF) or ((padded[1] and 0xF) shl 4) or
+            ((padded[2] and 0xF) shl 8) or ((padded[3] and 0xF) shl 12)
         return intArrayOf(unit0, methodIndex, unit2)
     }
 }

@@ -145,7 +145,7 @@ class InstalledCodeDexTest {
     fun rejectsOutOfRangeIndices() {
         val builder = minimalBuilder(35)
         val valid = builder.build()
-        val typeIdsOffset = 0x70 + builder.stringCount * 8
+        val typeIdsOffset = 0x70 + builder.stringCount * 4
         val corrupted = valid.copyOf()
         SyntheticDexBuilder.writeIntAt(corrupted, typeIdsOffset, 0x00FF)
         assertThrows(InstalledCodeFormatException::class.java) {
