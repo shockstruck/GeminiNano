@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.anandgaur.gemininano"
+    namespace = "dev.shockstruck.gemininano"
     compileSdk {
         version = release(37) {
             minorApiLevel = 1
@@ -12,13 +12,28 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.anandgaur.gemininano"
+        applicationId = "dev.shockstruck.gemininano"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // The default `offline` flavor is the deliverable: it must not request INTERNET.
+    // The optional `network` flavor only exists for a future, user-driven repository
+    // browser and is not built by the default build or by CI.
+    flavorDimensions += "network"
+    productFlavors {
+        create("offline") {
+            dimension = "network"
+            versionNameSuffix = "-offline"
+        }
+        create("network") {
+            dimension = "network"
+            versionNameSuffix = "-network"
+        }
     }
 
     buildTypes {
@@ -36,10 +51,19 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = false
     }
 }
 
 dependencies {
+    implementation(project(":core:model"))
+    implementation(project(":core:android"))
+    implementation(project(":core:genai"))
+    implementation(project(":core:diagnostics"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -49,20 +73,13 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // --- On-device AI (Gemini Nano via ML Kit GenAI) ---
-    // This is the ONLY AI dependency. There is no cloud SDK and no API key.
-    // The model runs inside Android AICore, entirely on the phone.
-    implementation(libs.mlkit.genai.summarization)
-
-    // Coroutines: run inference off the main thread and await() the ML Kit futures.
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.coroutines.guava)
-
-    // viewModel() + collectAsStateWithLifecycle() helpers for Compose.
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
 
+    testImplementation(project(":core:testing"))
     testImplementation(libs.junit)
+
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

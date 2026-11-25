@@ -3,30 +3,31 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      TEACHING POINT: There is deliberately NO
-      <uses-permission android:name="android.permission.INTERNET" /> here.
-      This app never touches the network. Gemini Nano runs fully on-device through
-      Android AICore, so the user's private note never leaves the phone. You can turn
-      wifi and mobile data OFF and summarization still works.
-
-      The ML Kit GenAI library requires API level 26. Our app keeps minSdk 24 so it still
-      installs on older phones, but the on-device AI code is guarded at runtime (see
-      NotesRepository) and shows a friendly "not supported" message on API < 26 or on
-      devices without Gemini Nano. tools:overrideLibrary lets us keep minSdk 24 for the app.
+      Gemini Nano Manager. The default `offline` flavor does not request INTERNET;
+      see app/src/offline/AndroidManifest.xml. The ML Kit GenAI library requires API 26,
+      but the app keeps minSdk 24 and guards the AI path at runtime, so the library
+      minSdk is overridden here.
     -->
-    <uses-sdk tools:overrideLibrary="com.google.mlkit.genai.summarization,com.google.mlkit.genai.common" />
+    <uses-sdk tools:overrideLibrary="com.google.mlkit.genai.summarization,com.google.mlkit.genai.common,dev.shockstruck.gemininano.core.genai" />
 
-    <!-- Package visibility (Android 11+) so the model card can report whether AICore and
-         its Private Compute Services companion are installed, and their versions. These
-         are metadata reads only: the app never binds to or calls either package. -->
+    <!-- Scoped package visibility. QUERY_ALL_PACKAGES is deliberately not requested. -->
     <queries>
         <package android:name="com.google.android.aicore" />
         <package android:name="com.google.android.apps.aicore" />
+        <package android:name="com.google.android.as.oss" />
         <package android:name="com.google.android.as" />
+        <package android:name="com.google.android.gms" />
+        <package android:name="com.android.vending" />
+        <package android:name="com.google.android.dialer" />
+        <package android:name="com.google.android.inputmethod.latin" />
+        <package android:name="com.google.android.apps.pixel.psi" />
+        <package android:name="com.google.android.nas" />
+        <package android:name="com.google.android.apps.pixel.agent" />
     </queries>
 
     <application
-        android:allowBackup="true"
+        android:name=".ManagerApplication"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
