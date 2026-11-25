@@ -209,12 +209,14 @@ fun ModelManagerCard(
                 KeyValueRow("Detail", it)
             }
             if (row.status == FeatureStatusKind.PROBE_ERROR) {
-                row.failure?.let { failure ->
-                    KeyValueRow("Error code", failure.codeLabel, monospace = true)
-                    KeyValueRow("Exception", failure.exceptionClass, monospace = true)
-                    KeyValueRow("Message", failure.message, monospace = true)
-                }
-                row.probeTimeLabel?.let { KeyValueRow("Probe time", it) }
+                KeyValueRow("Error code", row.failure?.codeLabel ?: "not reported", monospace = true)
+                KeyValueRow(
+                    "Exception",
+                    row.failure?.exceptionClass ?: "not reported",
+                    monospace = true,
+                )
+                KeyValueRow("Message", row.failure?.message ?: "not reported", monospace = true)
+                KeyValueRow("Probe time", row.probeTimeLabel ?: "not reported")
             }
             row.progress?.let { progress -> DownloadProgressRows(progress) }
             row.lastDownload?.let { download ->

@@ -188,9 +188,11 @@ object PermissionMatrixFormatting {
     /** One requested-permission fact exactly as the System Components screen shows it. */
     fun renderPermissionFact(fact: PermissionGrantFacts): String {
         val request = if (fact.requested) "requested" else "not requested"
+        val agreement = if (fact.grantSourcesDisagree) " · GRANT SOURCES DISAGREE" else ""
         return "${fact.permission}: $request · " +
             "checkPermission=${fact.state.label} · " +
-            "requestedPermissionsFlags=${requestedFlagsLabel(fact.requestedFlagsGrant)} · " +
+            "requestedPermissionsFlags=${requestedFlagsLabel(fact.requestedFlagsGrant)}" +
+            agreement + " · " +
             declarationLabel(fact.declaration)
     }
 

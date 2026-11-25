@@ -171,6 +171,23 @@ class PermissionMatrixTest {
     }
 
     @Test
+    fun aPermissionFactShowsADisagreementExplicitly() {
+        val fact = PermissionGrantFacts(
+            permission = PlatformPermissions.PCC,
+            state = GrantState.GRANTED,
+            requested = true,
+            requestedFlagsGrant = false,
+            declaration = declaration(),
+        )
+        assertTrue(fact.grantSourcesDisagree)
+        val rendered = PermissionMatrixFormatting.renderPermissionFact(fact)
+        assertTrue(rendered.contains("checkPermission=granted"))
+        assertTrue(rendered.contains("requestedPermissionsFlags=not granted"))
+        assertTrue(rendered.contains("GRANT SOURCES DISAGREE"))
+        assertTrue(rendered.contains("declared by android · protection=signature|privileged"))
+    }
+
+    @Test
     fun aReadErrorIsNeverReportedAsNotVisible() {
         val result = matrix(
             pcs = PackageFacts(
