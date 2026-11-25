@@ -19,7 +19,7 @@ class RedactorTest {
 
     @Test
     fun redactsEmailAddresses() {
-        val redacted = redactor.redact("contact kevin.barbieri@protonmail.com for details")
+        val redacted = redactor.redact("contact person@example.com for details")
         assertEquals("contact [redacted-email] for details", redacted)
     }
 
