@@ -12,7 +12,7 @@ demo. Internal experimental derivative; not affiliated with Google.
 
 ## Install on the device (no ADB required)
 
-The deliverable is the `offline` debug build, versionName **`0.4.0-offline`** (versionCode 4),
+The deliverable is the `offline` debug build, versionName **`0.5.0-offline`** (versionCode 5),
 applicationId `dev.shockstruck.gemininano`. The `Build offline debug APK` workflow builds it on
 every push and pull request and uploads it as the `gemini-nano-manager-offline-debug` artifact;
 you can also build it locally (see [Build](#build)). Installing it needs only the phone:
@@ -25,7 +25,7 @@ you can also build it locally (see [Build](#build)). Installing it needs only th
    (`Settings → Apps → Special app access → Install unknown apps`); the grant belongs to the
    file manager or browser, not to Gemini Nano Manager.
 3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager** and
-   version `0.4.0-offline`. If your installer does not display the package name or version code,
+   version `0.5.0-offline`. If your installer does not display the package name or version code,
    confirm them after the first launch in **Settings → Version and provenance** (Application ID
    `dev.shockstruck.gemininano`, version name and code) and in **System Components** (version,
    installer and signing certificate SHA-256). If the package name or version differs, you are
@@ -94,16 +94,27 @@ updated.
    network use, so a success row is evidence of offline operation **only** when you disabled
    connectivity yourself and checked it was off. A success with connectivity on is not offline
    evidence.
-6. **Private Compute Services → Run bind probe (6 services).** This is a separate explicit
-   action; Run Full Diagnostics does not trigger it. Tap **Run bind probe (6 services)** and
-   record, per fixed service: the bind outcome (binder returned, `SecurityException`, null
-   binding or timeout), the binder interface descriptor when returned, the exception
-   class/message, the elapsed time, the unbind-call count, and any `onServiceDisconnected` or
-   `onBindingDied`. The probe does one `bindService(BIND_AUTO_CREATE)` per component with a
-   3-second wait and exactly one unbind; it sends no binder transaction and calls no service
-   method. A returned binder therefore proves only that the OS association allowed the bind, not
-   that a gRPC request would be authorized.
-7. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
+6. **Private Compute Services → Run bind probe.** This is a separate explicit action; Run Full
+   Diagnostics does not trigger it. The rows are planned from the installed PCS package's own
+   exported, effectively enabled, permission-free services (the current build's
+   `com.google.android.apps.miphone.astrea.*` names; the older open-source names are aliases).
+   Before you tap, every planned bind reads **NOT RUN**; a known service the package does not
+   declare says **not declared**, which is different from declared-but-not-exported and from
+   components-not-read. Tap **Run bind probe (N eligible)** and record, per service: the bind
+   outcome (`binder returned`, `SecurityException`, null binding, timeout, refusal, binding
+   died), the guarded binder interface descriptor (an empty descriptor stays empty), whether
+   the binder is alive, the exception class/message, the elapsed time and the unbind-call
+   count. The probe does one `bindService(BIND_AUTO_CREATE)` per eligible service with a
+   3-second wait and exactly one unbind; it sends no binder transaction, builds no AIDL stub,
+   calls no `asInterface` and uses no transaction code. **Its result is this app's own bind
+   attempt and never proves AICore's access to PCS.**
+7. **Private Compute Services → launch controls.** **Open PCS settings** and **Open Network
+   usage log** are separate explicit taps, shown only when the installed package reports the
+   activity as exported, effectively enabled and permission-free. The item-details activity is
+   listed but not launched because its required extras are not publicly known; none are
+   guessed. Each tap records resolved/launched, `ActivityNotFoundException`,
+   `SecurityException` or another error. Nothing is read back from another app's screen.
+8. **What to attach back.** The Provisioning Diagnostics JSON export (and the text export if
    convenient); the Diagnostic Logs JSON export if you want the event stream; the AICore and PCS
    versions from Overview; the permission matrix (already in the JSON export); the per-feature
    and per-Prompt rows; the six bind outcomes; and the offline matrix with a note confirming you
@@ -177,13 +188,18 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   The feature id is parsed only from `Feature <id> is not available`. Feature 622 never
   derives Prompt state.
 - **PCS surface and bind.** Exported services, activities, receivers and providers are
-  enumerated with declared permission, enabled state and probed intent actions. The bind
-  probe performs one `bindService(BIND_AUTO_CREATE)` per fixed component with a 3-second
-  wait and exactly one `unbindService`, recording the framework's `SecurityException`,
-  null binding, binder descriptor, disconnects and elapsed time. It sends no binder
-  transaction, builds no AIDL stub, uses no reflection and calls no service method.
-  Job-bound services are static facts only. `ACTION_APPLICATION_PREFERENCES` is resolved
-  and opened only on a user tap.
+  enumerated with declared permission, manifest and effective enabled state, the public
+  runtime enabled setting and probed intent actions. A reduced package read that did not
+  return components says "components not read", never "none". The bind plan is built from
+  those runtime facts: only an exported, effectively enabled, permission-free service is
+  eligible; the two current `astrea` names come first and the open-source names remain
+  aliases. The probe performs one `bindService(BIND_AUTO_CREATE)` per eligible service
+  with a 3-second wait and exactly one `unbindService`, recording the outcome, the guarded
+  descriptor read and its own timing, binder-alive state, exception, disconnects and
+  elapsed time. It sends no binder transaction, builds no AIDL stub, calls no
+  `asInterface` and uses no transaction code. Job-bound services are static facts only.
+  Launch controls for PCS settings and the network usage log are explicit taps; the
+  item-details activity is not launched because its extras are unknown.
 - **Feature matrix.** Eight independent clients over the public SDKs: Rewriting,
   Proofreading, Image Description, Embedding, Agent, Speech Recognition, Speech
   Translation and Text to Speech. Each probe records only what its own client returned;
@@ -206,8 +222,12 @@ module importing `com.google.mlkit.genai.*`), `:core:diagnostics`, `:core:testin
   permission matrix, probes every GenAI feature status, the four Prompt configs and the
   retained summarization probe, records the PCS surface, includes any bind results the
   user already ran, and builds JSON and text reports through the existing SAF export
-  path. Each probe is isolated and bounded by a 30-second timeout, so one probe that
-  throws or hangs cannot prevent the rest of the report. It performs no download and no
+  path. Each probe is isolated and bounded by a 30-second timeout. The report separates
+  "probe executed" from "feature available" for every feature and Prompt row, lists every
+  explicitly untested operation, names the AICore/PCS/ASI/GMS versionCode and signer
+  SHA-256, includes the relevant `getSystemAvailableFeatures` names, and keeps full
+  permission enumeration to AICore and PCS. Bind rows carry the holder's first-install and
+  last-update times beside AICore's first-install time. It performs no download and no
   bind.
 - **Decision line.** Built from the evidence above: PCS PCC state, Prompt 606/AVAILABLE
   results and the gRPC bind outcome. The label is always
@@ -245,9 +265,10 @@ their own network permissions.
 - The Prompt probe is a separate experiment. A Prompt 606 with its own feature id means
   AICore has no ML Kit feature entry for that Prompt configuration; it does not prove the
   base model is absent, and it never marks summarization.
-- The safe bind probe records what the framework returns on this OS. It cannot and does
-  not send a gRPC request, so a returned binder is evidence that the OS association
-  allowed the bind, not that the gRPC service would authorize a call.
+- The safe bind probe records what the framework returns to this app on this OS. It cannot
+  and does not send a gRPC request, so a returned binder is evidence about this app's own
+  bind attempt only; it says nothing about AICore's access to PCS or a gRPC call's
+  authorization.
 - Android's package visibility limits what can be read about other packages; results are
   labelled "not visible" rather than guessed. Intent actions come from a fixed set of
   probed actions because other apps' intent-filter XML is not exposed.

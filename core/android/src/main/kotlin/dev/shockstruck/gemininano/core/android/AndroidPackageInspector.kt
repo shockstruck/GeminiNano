@@ -14,18 +14,21 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
 import dev.shockstruck.gemininano.model.BuildFacts
+import dev.shockstruck.gemininano.model.ComponentEnabledSetting
 import dev.shockstruck.gemininano.model.ComponentFacts
 import dev.shockstruck.gemininano.model.ComponentKind
 import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.MetadataFacts
 import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PackageFactsProvider
-import dev.shockstruck.gemininano.model.PackageReadError
 import dev.shockstruck.gemininano.model.PackageReadOutcome
 import dev.shockstruck.gemininano.model.PackageReads
+import dev.shockstruck.gemininano.model.PackageReadCoverage
 import dev.shockstruck.gemininano.model.PackageVisibility
 import dev.shockstruck.gemininano.model.PermissionDeclaration
 import dev.shockstruck.gemininano.model.PermissionGrantFacts
+import dev.shockstruck.gemininano.model.PlatformPermissions
+import dev.shockstruck.gemininano.model.PlatformPrincipals
 import java.security.MessageDigest
 import java.util.Locale
 
@@ -35,7 +38,8 @@ import java.util.Locale
  * block; if a package cannot be seen, [PackageVisibility.NOT_VISIBLE] is reported
  * instead of pretending the package is missing. Any other read failure is a
  * [PackageVisibility.READ_ERROR] with its class and message, after smaller flag sets
- * were tried.
+ * were tried. The successful flag set's coverage is carried into [PackageFacts] so an
+ * unread fact is never rendered as empty or "not requested".
  */
 class AndroidPackageInspector(
     private val context: Context,
@@ -88,11 +92,25 @@ class AndroidPackageInspector(
 
             is PackageReadOutcome.Success -> outcome.value
         }
+        val coverage = coverageOf(PACKAGE_INFO_FLAG_SETS[outcome.attempt])
 
-        val requestedPermissions = info.requestedPermissions?.toList().orEmpty()
-        val permissionNames = buildList {
-            addAll(requestedPermissions)
-            addAll(PackageCatalog.NAMED_PERMISSIONS.filter { it !in requestedPermissions })
+        val requestedPermissions = if (coverage.permissions) {
+            info.requestedPermissions?.toList().orEmpty()
+        } else {
+            emptyList()
+        }
+        val permissionNames = if (coverage.permissions) {
+            val all = buildList {
+                addAll(requestedPermissions)
+                addAll(PackageCatalog.NAMED_PERMISSIONS.filter { it !in requestedPermissions })
+            }
+            if (packageName in AICORE_AND_PCS) {
+                all
+            } else {
+                all.filter { it in PlatformPermissions.OTHER_PACKAGE_PERMISSIONS }
+            }
+        } else {
+            emptyList()
         }
         return PackageFacts(
             packageName = packageName,
@@ -100,7 +118,7 @@ class AndroidPackageInspector(
             versionName = info.versionName,
             versionCode = versionCode(info),
             installerPackage = installer(packageName),
-            signingSha256 = signingDigests(info),
+            signingSha256 = if (coverage.signers) signingDigests(info) else emptyList(),
             targetSdk = info.applicationInfo?.targetSdkVersion,
             minSdk = if (Build.VERSION.SDK_INT >= 24) info.applicationInfo?.minSdkVersion else null,
             enabled = info.applicationInfo?.enabled,
@@ -114,20 +132,27 @@ class AndroidPackageInspector(
                     declaration = declaration(permission),
                 )
             },
-            components = buildList {
-                addAll(componentFacts(ComponentKind.ACTIVITY, info.activities, actions))
-                addAll(componentFacts(ComponentKind.SERVICE, info.services, actions))
-                addAll(componentFacts(ComponentKind.RECEIVER, info.receivers, actions))
-                addAll(componentFacts(ComponentKind.PROVIDER, info.providers, actions))
+            components = if (coverage.components) {
+                buildList {
+                    addAll(componentFacts(packageName, ComponentKind.ACTIVITY, info.activities, actions))
+                    addAll(componentFacts(packageName, ComponentKind.SERVICE, info.services, actions))
+                    addAll(componentFacts(packageName, ComponentKind.RECEIVER, info.receivers, actions))
+                    addAll(componentFacts(packageName, ComponentKind.PROVIDER, info.providers, actions))
+                }
+            } else {
+                emptyList()
             },
-            metadata = metadataFacts(info.applicationInfo?.metaData),
+            metadata = if (coverage.metadata) metadataFacts(info.applicationInfo?.metaData) else emptyList(),
+            coverage = coverage,
+            firstInstallTime = info.firstInstallTime,
+            lastUpdateTime = info.lastUpdateTime,
         )
     }
 
     /**
      * The `requestedPermissionsFlags` grant bit for one requested permission. `null`
-     * when the OS did not report it (for example after a smaller-flag retry), never a
-     * guessed value.
+     * when the OS did not report it (for example after a reduced read), never a guessed
+     * value.
      */
     private fun requestedFlagsGrant(info: PackageInfo, permission: String): Boolean? {
         val requested = info.requestedPermissions ?: return null
@@ -208,21 +233,35 @@ class AndroidPackageInspector(
     }
 
     private fun componentFacts(
+        packageName: String,
         kind: ComponentKind,
         entries: Array<out ComponentInfo>?,
         actions: Map<String, Set<String>>,
     ): List<ComponentFacts> = entries.orEmpty().map { component ->
+        val runtimeSetting = componentEnabledSetting(packageName, component.name)
         ComponentFacts(
             kind = kind,
             className = component.name,
             exported = component.exported,
             requiredPermission = requiredPermission(component),
             enabled = component.enabled,
-            effectivelyEnabled = component.isEnabled,
+            manifestEffectiveEnabled = component.isEnabled,
+            runtimeEnabledSetting = runtimeSetting,
+            effectivelyEnabled = ComponentEnabledSetting.effective(
+                manifestEffectiveEnabled = component.isEnabled,
+                setting = runtimeSetting,
+            ),
             intentActions = actions["${kind.name}:${component.name}"].orEmpty().sorted(),
             authorities = (component as? ProviderInfo)?.authority?.let { listOf(it) }.orEmpty(),
             metaDataKeys = component.metaData?.keySet()?.sorted().orEmpty(),
         )
+    }
+
+    /** Public runtime override; `null` means the lookup failed and is rendered unknown. */
+    private fun componentEnabledSetting(packageName: String, className: String): Int? = try {
+        packageManager.getComponentEnabledSetting(ComponentName(packageName, className))
+    } catch (t: Throwable) {
+        null
     }
 
     private fun requiredPermission(component: ComponentInfo): String? = when (component) {
@@ -324,9 +363,23 @@ class AndroidPackageInspector(
     }
 
     private companion object {
+        val AICORE_AND_PCS = setOf(
+            PlatformPrincipals.AICORE,
+            PlatformPrincipals.AICORE_LEGACY,
+            PlatformPrincipals.PCS,
+        )
+
+        val SIGNING_FLAG: Int = if (Build.VERSION.SDK_INT >= 28) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+
         /**
-         * The read ladder: all facts first, then only permissions/metadata, then the
-         * minimum the OS will return. A smaller set can succeed where a larger one throws.
+         * The read ladder: all facts first, then permissions/metadata without component
+         * or signer lists, then permissions only, then the minimum the OS will return.
+         * The successful step's coverage is carried into the facts.
          */
         val PACKAGE_INFO_FLAG_SETS: List<Int> = listOf(
             PackageManager.GET_PERMISSIONS or
@@ -335,12 +388,26 @@ class AndroidPackageInspector(
                 PackageManager.GET_RECEIVERS or
                 PackageManager.GET_PROVIDERS or
                 PackageManager.GET_META_DATA or
-                PackageManager.GET_SIGNING_CERTIFICATES or
+                SIGNING_FLAG or
                 PackageManager.GET_DISABLED_COMPONENTS,
             PackageManager.GET_PERMISSIONS or
                 PackageManager.GET_META_DATA or
                 PackageManager.GET_DISABLED_COMPONENTS,
+            PackageManager.GET_PERMISSIONS,
             0,
         )
+
+        fun coverageOf(flags: Int): PackageReadCoverage {
+            val componentFlags = PackageManager.GET_ACTIVITIES or
+                PackageManager.GET_SERVICES or
+                PackageManager.GET_RECEIVERS or
+                PackageManager.GET_PROVIDERS
+            return PackageReadCoverage(
+                permissions = flags and PackageManager.GET_PERMISSIONS != 0,
+                components = flags and componentFlags == componentFlags,
+                signers = flags and SIGNING_FLAG != 0,
+                metadata = flags and PackageManager.GET_META_DATA != 0,
+            )
+        }
     }
 }

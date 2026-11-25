@@ -4,8 +4,10 @@ import android.content.Context
 import android.os.Build
 import dev.shockstruck.gemininano.core.android.AndroidPackageInspector
 import dev.shockstruck.gemininano.core.android.PackageCatalog
+import dev.shockstruck.gemininano.core.android.PcsActivityLauncher
 import dev.shockstruck.gemininano.core.android.PcsSurfaceInspector
 import dev.shockstruck.gemininano.core.android.PermissionMatrixProbe
+import dev.shockstruck.gemininano.core.android.SystemFeatureFacts
 import dev.shockstruck.gemininano.core.android.SafeBindProbe
 import dev.shockstruck.gemininano.core.genai.MlKitFeatureSuite
 import dev.shockstruck.gemininano.core.genai.MlKitPromptProbe
@@ -55,6 +57,10 @@ class AppGraph(context: Context) {
     val pcsSurfaceInspector = PcsSurfaceInspector(appContext)
 
     val safeBindProbe = SafeBindProbe(appContext)
+
+    val pcsActivityLauncher = PcsActivityLauncher(appContext)
+
+    val systemFeatureFacts = SystemFeatureFacts(appContext)
 
     val summarizationProbe: SummarizationProbe =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

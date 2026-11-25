@@ -20,7 +20,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -30,8 +29,6 @@ import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.diagnostics.DiagnosticFormatting
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFeature
-import dev.shockstruck.gemininano.model.Outcome
-import dev.shockstruck.gemininano.model.Severity
 import dev.shockstruck.gemininano.ui.components.KeyValueRow
 import dev.shockstruck.gemininano.ui.components.PcsBindCard
 import dev.shockstruck.gemininano.ui.components.PcsSurfaceCard
@@ -56,7 +53,6 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
     val settings by graph.settings.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val exportManager = remember(viewModel) { viewModel.exportManager() }
     var exportMessage by remember { mutableStateOf<String?>(null) }
@@ -217,24 +213,15 @@ fun ProvisioningDiagnosticsScreen(graph: AppGraph, modifier: Modifier = Modifier
         item {
             PcsSurfaceCard(
                 surface = state.surface,
-                onOpenSettings = {
-                    runCatching { context.startActivity(graph.pcsSurfaceInspector.settingsIntent()) }
-                        .onFailure { failure ->
-                            graph.diagnosticBus.log(
-                                component = "pcs",
-                                operation = "openSettings",
-                                outcome = Outcome.FAILURE,
-                                severity = Severity.ERROR,
-                                exceptionClass = failure.javaClass.name,
-                                message = failure.message,
-                            )
-                        }
-                },
+                launchResults = state.launchResults,
+                launchBusy = state.launchBusy,
+                onLaunch = viewModel::launchActivity,
             )
         }
         item {
             PcsBindCard(
                 results = state.bindResults,
+                eligibleCount = state.eligibleBindCount,
                 busy = state.bindBusy,
                 message = state.bindMessage,
                 onRun = viewModel::runBindProbe,

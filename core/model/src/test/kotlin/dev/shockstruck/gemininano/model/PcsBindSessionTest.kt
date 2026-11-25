@@ -53,6 +53,61 @@ class PcsBindSessionTest {
     }
 
     @Test
+    fun anEmptyDescriptorIsKeptEmptyAndTheBinderIsAlive() {
+        val session = session()
+        session.onBindAccepted()
+        val result = session.onBinderConnected(
+            interfaceDescriptor = "",
+            descriptorReadMillis = 7L,
+            descriptorErrorClass = null,
+            descriptorErrorMessage = null,
+            binderAlive = true,
+            nowMillis = 1_080L,
+        )!!
+        assertEquals(PcsBindOutcome.BINDER_RETURNED, result.outcome)
+        assertEquals("", result.interfaceDescriptor)
+        assertEquals(true, result.binderAlive)
+        assertEquals(7L, result.descriptorReadMillis)
+        assertEquals(80L, result.elapsedMillis)
+    }
+
+    @Test
+    fun aFailedDescriptorReadKeepsTheBinderOutcomeAndRecordsItsOwnError() {
+        val session = session()
+        session.onBindAccepted()
+        val result = session.onBinderConnected(
+            interfaceDescriptor = null,
+            descriptorReadMillis = 4L,
+            descriptorErrorClass = "java.lang.IllegalStateException",
+            descriptorErrorMessage = "descriptor unavailable",
+            binderAlive = false,
+            nowMillis = 1_090L,
+        )!!
+        assertEquals(PcsBindOutcome.BINDER_RETURNED, result.outcome)
+        assertEquals(null, result.interfaceDescriptor)
+        assertEquals("java.lang.IllegalStateException", result.descriptorErrorClass)
+        assertEquals("descriptor unavailable", result.descriptorErrorMessage)
+        assertEquals(false, result.binderAlive)
+    }
+
+    @Test
+    fun aBinderWithNoDescriptorIsStillABinderNotANullBinding() {
+        val session = session()
+        session.onBindAccepted()
+        val result = session.onBinderConnected(
+            interfaceDescriptor = null,
+            descriptorReadMillis = 0L,
+            descriptorErrorClass = null,
+            descriptorErrorMessage = null,
+            binderAlive = null,
+            nowMillis = 1_100L,
+        )
+        // The binder-present variant never maps null to NULL_BINDING; the callback for
+        // a truly absent binder uses onNullBinding.
+        assertEquals(PcsBindOutcome.BINDER_RETURNED, result!!.outcome)
+    }
+
+    @Test
     fun timeoutIsReportedAndStillUnbinds() {
         val session = session()
         session.onBindAccepted()

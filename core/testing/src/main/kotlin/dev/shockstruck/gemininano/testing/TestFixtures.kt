@@ -1,6 +1,7 @@
 package dev.shockstruck.gemininano.testing
 
 import dev.shockstruck.gemininano.model.BuildFacts
+import dev.shockstruck.gemininano.model.ComponentEnabledSetting
 import dev.shockstruck.gemininano.model.ComponentFacts
 import dev.shockstruck.gemininano.model.ComponentKind
 import dev.shockstruck.gemininano.model.DiagnosticEvent
@@ -129,11 +130,18 @@ object TestFixtures {
         className: String = "com.example.ExportActivity",
         exported: Boolean = true,
         requiredPermission: String? = null,
+        enabled: Boolean = true,
+        runtimeEnabledSetting: Int? = ComponentEnabledSetting.DEFAULT,
+        effectivelyEnabled: Boolean? = true,
     ) = ComponentFacts(
         kind = kind,
         className = className,
         exported = exported,
         requiredPermission = requiredPermission,
+        enabled = enabled,
+        manifestEffectiveEnabled = enabled,
+        runtimeEnabledSetting = runtimeEnabledSetting,
+        effectivelyEnabled = effectivelyEnabled,
     )
 
     private fun matrixFacts(

@@ -138,9 +138,10 @@ private fun PackageCard(facts: PackageFacts) {
         KeyValueRow("Version", PackageFactsFormatting.versionLabel(facts))
         KeyValueRow("Installer", PackageFactsFormatting.installerLabel(facts), monospace = true)
         KeyValueRow("SDK", PackageFactsFormatting.sdkLabel(facts))
-        KeyValueRow("Requested permissions", facts.requestedPermissions.size.toString())
-        KeyValueRow("Components", facts.components.size.toString())
-        KeyValueRow("Application metadata", facts.metadata.size.toString())
+        KeyValueRow("Requested permissions", PackageFactsFormatting.requestedPermissionsLabel(facts))
+        KeyValueRow("Components", PackageFactsFormatting.componentsLabel(facts))
+        KeyValueRow("Application metadata", PackageFactsFormatting.metadataLabel(facts))
+        KeyValueRow("Install times", PackageFactsFormatting.installTimesLabel(facts))
         KeyValueRow(
             label = "Signing certificate SHA-256",
             value = PackageFactsFormatting.signingLabel(facts),
@@ -160,23 +161,30 @@ private fun PackageCard(facts: PackageFacts) {
                 "Permission verification — requested, checkPermission, requestedPermissionsFlags, declaration",
                 fontWeight = FontWeight.SemiBold,
             )
-            facts.permissionGrants.forEach { grant ->
+            if (!facts.permissionsRead) {
                 MonoText(
-                    text = PermissionMatrixFormatting.renderPermissionFact(grant),
+                    text = "permissions not read on this reduced package read; not requested cannot be concluded",
                     modifier = Modifier.padding(vertical = 1.dp),
                 )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("Requested-but-denied signature or privileged", fontWeight = FontWeight.SemiBold)
-            val denied = facts.requestedButDeniedSignatureOrPrivileged
-            if (denied.isEmpty()) {
-                MonoText("none", modifier = Modifier.padding(vertical = 1.dp))
             } else {
-                denied.forEach { grant ->
+                facts.permissionGrants.forEach { grant ->
                     MonoText(
                         text = PermissionMatrixFormatting.renderPermissionFact(grant),
                         modifier = Modifier.padding(vertical = 1.dp),
                     )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Requested-but-denied signature or privileged", fontWeight = FontWeight.SemiBold)
+                val denied = facts.requestedButDeniedSignatureOrPrivileged
+                if (denied.isEmpty()) {
+                    MonoText("none", modifier = Modifier.padding(vertical = 1.dp))
+                } else {
+                    denied.forEach { grant ->
+                        MonoText(
+                            text = PermissionMatrixFormatting.renderPermissionFact(grant),
+                            modifier = Modifier.padding(vertical = 1.dp),
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(8.dp))

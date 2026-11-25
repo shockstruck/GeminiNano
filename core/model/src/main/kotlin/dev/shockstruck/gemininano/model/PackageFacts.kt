@@ -14,6 +14,28 @@ enum class PackageVisibility {
     READ_ERROR,
 }
 
+/**
+ * Which fact groups the successful read actually returned. A smaller flag set can
+ * succeed where the full one throws; unread facts must never be rendered as empty or
+ * "not requested".
+ */
+data class PackageReadCoverage(
+    val permissions: Boolean = true,
+    val components: Boolean = true,
+    val signers: Boolean = true,
+    val metadata: Boolean = true,
+) {
+    companion object {
+        val FULL = PackageReadCoverage()
+        val NONE = PackageReadCoverage(
+            permissions = false,
+            components = false,
+            signers = false,
+            metadata = false,
+        )
+    }
+}
+
 /** A package read that failed for a reason other than "not visible". */
 data class PackageReadError(
     val exceptionClass: String,
@@ -94,6 +116,37 @@ data class PermissionDeclaration(
 }
 
 /** Bit meanings mirrored from `android.content.pm.PermissionInfo` for pure-JVM display. */
+/** Public `ComponentInfo`/`PackageManager` enabled-setting values for display and logic. */
+object ComponentEnabledSetting {
+    const val DEFAULT = 0
+    const val ENABLED = 1
+    const val DISABLED = 2
+    const val DISABLED_USER = 3
+    const val DISABLED_UNTIL_USED = 4
+
+    fun label(setting: Int?): String = when (setting) {
+        null -> "unknown (lookup failed)"
+        DEFAULT -> "default"
+        ENABLED -> "enabled"
+        DISABLED -> "disabled"
+        DISABLED_USER -> "disabled-user"
+        DISABLED_UNTIL_USED -> "disabled-until-used"
+        else -> "setting=$setting"
+    }
+
+    /**
+     * Effective enabled state: DEFAULT falls back to `ComponentInfo.isEnabled()`;
+     * an explicit override wins; a failed lookup is unknown, never false.
+     */
+    fun effective(manifestEffectiveEnabled: Boolean, setting: Int?): Boolean? = when (setting) {
+        null -> null
+        DEFAULT -> manifestEffectiveEnabled
+        ENABLED -> true
+        DISABLED, DISABLED_USER, DISABLED_UNTIL_USED -> false
+        else -> null
+    }
+}
+
 object PermissionProtection {
     const val BASE_NORMAL = 0
     const val BASE_DANGEROUS = 1
@@ -184,9 +237,14 @@ data class ComponentFacts(
     val className: String,
     val exported: Boolean,
     val requiredPermission: String? = null,
+    /** The component's own manifest flag (`ComponentInfo.enabled`). */
     val enabled: Boolean = true,
-    /** `ComponentInfo.isEnabled()`: the component's own flag plus the application's. */
-    val effectivelyEnabled: Boolean = true,
+    /** `ComponentInfo.isEnabled()`: the manifest flag plus the application flag. */
+    val manifestEffectiveEnabled: Boolean = true,
+    /** `PackageManager.getComponentEnabledSetting`; null when the lookup failed. */
+    val runtimeEnabledSetting: Int? = null,
+    /** Manifest effective state with the public runtime override applied; null unknown. */
+    val effectivelyEnabled: Boolean? = null,
     val intentActions: List<String> = emptyList(),
     val authorities: List<String> = emptyList(),
     val metaDataKeys: List<String> = emptyList(),
@@ -221,8 +279,15 @@ data class PackageFacts(
     val components: List<ComponentFacts> = emptyList(),
     val metadata: List<MetadataFacts> = emptyList(),
     val readError: PackageReadError? = null,
+    val coverage: PackageReadCoverage = PackageReadCoverage.FULL,
+    val firstInstallTime: Long? = null,
+    val lastUpdateTime: Long? = null,
 ) {
     val visible: Boolean get() = visibility == PackageVisibility.VISIBLE
+
+    val permissionsRead: Boolean get() = visible && coverage.permissions
+    val componentsRead: Boolean get() = visible && coverage.components
+    val signersRead: Boolean get() = visible && coverage.signers
 
     /** Requested, denied, and declared signature or privileged. */
     val requestedButDeniedSignatureOrPrivileged: List<PermissionGrantFacts>

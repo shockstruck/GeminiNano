@@ -19,6 +19,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
+import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
+import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
 import dev.shockstruck.gemininano.model.PcsBindResult
 import dev.shockstruck.gemininano.model.PcsSurface
@@ -217,7 +219,9 @@ private fun PromptStatusRows(status: PromptConfigStatus) {
 @Composable
 fun PcsSurfaceCard(
     surface: PcsSurface?,
-    onOpenSettings: () -> Unit,
+    launchResults: List<PcsActivityLaunchResult>,
+    launchBusy: Boolean,
+    onLaunch: (PcsActivityTarget) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     SectionCard(
@@ -242,13 +246,25 @@ fun PcsSurfaceCard(
                     "components are absent.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+        } else if (!surface.componentsRead) {
+            StatusBadge(
+                text = "COMPONENTS NOT READ",
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = (surface.componentsReadDetail ?: "The reduced package read did not return components.") +
+                    " An empty surface is not claimed.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
         } else {
             KeyValueRow("Exported components", surface.exportedComponents.size.toString())
             if (surface.exportedComponents.isEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "No exported components were returned. Check the scoped <queries> " +
-                        "block before concluding that PCS has no surface.",
+                    text = "No exported components were returned by the read. Check the scoped " +
+                        "<queries> block before concluding that PCS has no surface.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -262,9 +278,7 @@ fun PcsSurfaceCard(
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "Job-bound services are static facts only and are never bound: " +
-                    "android.permission.BIND_JOB_SERVICE gates HeartbeatService and " +
-                    "NetworkUsageLogTtlService.",
+                text = "Services with a required permission are static facts only and are never bound.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -273,38 +287,55 @@ fun PcsSurfaceCard(
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Settings (one-tap check)",
+            text = "Launch controls (explicit tap only)",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
         )
-        KeyValueRow(
-            label = "ACTION_APPLICATION_PREFERENCES",
-            value = if (surface.settings.resolved) "resolved" else "not resolved",
-            isUnknown = !surface.settings.resolved,
-        )
-        surface.settings.activityName?.let {
-            KeyValueRow(label = "Activity", value = it, monospace = true)
-        }
         Text(
-            text = surface.settings.detail,
+            text = "Shown only for an activity the installed package reports as exported, " +
+                "effectively enabled and permission-free. Nothing is read back from another app's screen.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(6.dp))
-        TextButton(onClick = onOpenSettings, enabled = surface.settings.resolved) {
-            Text("Open PCS settings")
+        surface.launchTargets.forEach { target ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "${target.label} — ${target.className}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+            )
+            KeyValueRow(
+                label = "Launchable",
+                value = if (target.launchable) "yes" else "no",
+                isUnknown = !target.launchable,
+            )
+            Text(
+                text = target.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(
+                onClick = { onLaunch(target) },
+                enabled = target.launchable && !launchBusy,
+            ) {
+                Text("Open ${target.label}")
+            }
+            launchResults.firstOrNull { it.className == target.className }?.let { result ->
+                KeyValueRow("Last launch", result.outcomeLabel)
+                KeyValueRow("Resolved", if (result.resolved) "yes" else "no")
+                result.exceptionClass?.let { KeyValueRow("Exception", it, monospace = true) }
+                result.exceptionMessage?.let { KeyValueRow("Message", it, monospace = true) }
+                result.elapsedMillis?.let { KeyValueRow("Launch elapsed", "$it ms") }
+            }
         }
-        Text(
-            text = "This is a user tap; nothing is launched during routine diagnostics.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
 @Composable
 fun PcsBindCard(
     results: List<PcsBindResult>,
+    eligibleCount: Int,
     busy: Boolean,
     message: String?,
     onRun: () -> Unit,
@@ -313,27 +344,35 @@ fun PcsBindCard(
     SectionCard(
         title = "Safe bind probe",
         modifier = modifier,
-        subtitle = "bindService(BIND_AUTO_CREATE) once per fixed service, 3-second wait, one unbind.",
+        subtitle = "bindService(BIND_AUTO_CREATE) once per eligible service, 3-second wait, one unbind.",
     ) {
-        TextButton(onClick = onRun, enabled = !busy) {
-            Text(if (busy) "Binding…" else "Run bind probe (6 services)")
+        TextButton(onClick = onRun, enabled = !busy && eligibleCount > 0) {
+            Text(
+                when {
+                    busy -> "Binding…"
+                    eligibleCount == 0 -> "No eligible PCS service"
+                    else -> "Run bind probe ($eligibleCount eligible)"
+                },
+            )
         }
         Text(
-            text = "No binder transaction, AIDL stub, reflection or service method call is made. " +
-                "Only the framework's ServiceConnection callbacks are recorded.",
+            text = "No binder transaction, AIDL stub, asInterface, transaction code, reflection or " +
+                "service method call is made. Only the framework's ServiceConnection callbacks and " +
+                "a guarded interfaceDescriptor read are recorded. A result belongs to this app's own " +
+                "bind attempt and never proves AICore's access.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (results.isEmpty()) {
             Spacer(Modifier.height(8.dp))
-            Text("No bind probe has run yet.", style = MaterialTheme.typography.bodyMedium)
+            Text("No bind plan has been collected yet.", style = MaterialTheme.typography.bodyMedium)
         }
         results.forEach { result ->
             Spacer(Modifier.height(10.dp))
             HorizontalDivider()
             Spacer(Modifier.height(6.dp))
             Text(
-                text = result.componentName,
+                text = (result.role?.let { "$it · " } ?: "") + result.componentName,
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
@@ -351,9 +390,37 @@ fun PcsBindCard(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
+            KeyValueRow("Attempted", if (result.outcome.attempted) "yes" else "no")
+            KeyValueRow("Bind flag", result.bindFlag, monospace = true)
+            result.declaredName?.let { KeyValueRow("Declared name", it, monospace = true) }
+            result.requiredPermission?.let { KeyValueRow("Required permission", it, monospace = true) }
             KeyValueRow("Elapsed", "${result.elapsedMillis} ms")
-            result.interfaceDescriptor?.let {
-                KeyValueRow("Binder interface", it, monospace = true)
+            if (result.outcome.attempted) {
+                val descriptor = result.interfaceDescriptor
+                KeyValueRow(
+                    label = "Binder descriptor",
+                    value = when {
+                        result.descriptorErrorClass != null -> "read failed"
+                        descriptor == null -> "null"
+                        descriptor.isEmpty() -> "empty"
+                        else -> descriptor
+                    },
+                    monospace = true,
+                )
+                KeyValueRow(
+                    label = "Binder",
+                    value = result.binderLabel,
+                    isUnknown = result.binderAlive == null && result.outcome != PcsBindOutcome.NULL_BINDING,
+                )
+                result.descriptorReadMillis?.let {
+                    KeyValueRow("Descriptor read", "$it ms")
+                }
+                result.descriptorErrorClass?.let {
+                    KeyValueRow("Descriptor error", it, monospace = true)
+                }
+                result.descriptorErrorMessage?.let {
+                    KeyValueRow("Descriptor message", it, monospace = true)
+                }
             }
             result.exceptionClass?.let {
                 KeyValueRow("Exception", it, monospace = true)

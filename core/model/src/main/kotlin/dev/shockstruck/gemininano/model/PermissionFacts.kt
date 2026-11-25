@@ -7,6 +7,7 @@ object PlatformPrincipals {
     const val AICORE = "com.google.android.aicore"
     const val AICORE_LEGACY = "com.google.android.apps.aicore"
     const val APP = "dev.shockstruck.gemininano"
+    const val GMS = "com.google.android.gms"
 }
 
 /** Named permissions whose requested and granted state the matrix observes separately. */
@@ -18,6 +19,7 @@ object PlatformPermissions {
     const val READ_DEVICE_CONFIG = "android.permission.READ_DEVICE_CONFIG"
     const val READ_RESTRICTED_STATS = "android.permission.READ_RESTRICTED_STATS"
     const val INTERNET = "android.permission.INTERNET"
+    const val QUERY_ALL_PACKAGES = "android.permission.QUERY_ALL_PACKAGES"
 
     /** The exact permission columns of the requested-vs-granted matrix. */
     val MATRIX: List<String> = listOf(
@@ -29,6 +31,9 @@ object PlatformPermissions {
         READ_RESTRICTED_STATS,
         INTERNET,
     )
+
+    /** The only permissions reported for packages other than AICore and PCS. */
+    val OTHER_PACKAGE_PERMISSIONS: List<String> = MATRIX + listOf(AICORE_BIND, QUERY_ALL_PACKAGES)
 }
 
 data class PermissionPrincipal(
@@ -54,6 +59,8 @@ data class PermissionObservation(
     val grant: GrantState,
     val requestedFlagsGrant: Boolean? = null,
     val declaration: PermissionDeclaration? = null,
+    /** False when the package read never returned `requestedPermissions`. */
+    val permissionsRead: Boolean = true,
 ) {
     val packageVisible: Boolean get() = packageVisibility == PackageVisibility.VISIBLE
 
@@ -72,6 +79,7 @@ data class PermissionObservation(
         get() = when {
             packageVisibility == PackageVisibility.NOT_VISIBLE -> PermissionStatus.NOT_VISIBLE
             packageVisibility == PackageVisibility.READ_ERROR -> PermissionStatus.READ_ERROR
+            !permissionsRead -> PermissionStatus.NOT_READ
             !requested && anyGrantObserved -> PermissionStatus.GRANTED_NOT_REQUESTED
             requested && grantSourcesDisagree -> PermissionStatus.GRANT_DISAGREEMENT
             requested && anyGrantObserved -> PermissionStatus.GRANTED
@@ -90,6 +98,7 @@ enum class PermissionStatus(val label: String) {
     UNKNOWN("requested · unknown"),
     NOT_VISIBLE("unknown (package not visible)"),
     READ_ERROR("unknown (package read error)"),
+    NOT_READ("unknown (permissions not read)"),
 }
 
 data class PermissionMatrix(
@@ -127,6 +136,7 @@ object PermissionMatrixBuilder {
             val facts = factsByPackage[principal.packageName]
             val visibility = facts?.visibility ?: PackageVisibility.NOT_VISIBLE
             val visible = visibility == PackageVisibility.VISIBLE
+            val permissionsRead = visible && facts?.coverage?.permissions == true
             val requestedPermissions = facts?.requestedPermissions.orEmpty()
             permissions.map { permission ->
                 val fact = facts?.permissionGrants?.firstOrNull { it.permission == permission }
@@ -139,6 +149,7 @@ object PermissionMatrixBuilder {
                     grant = fact?.state ?: GrantState.UNKNOWN,
                     requestedFlagsGrant = fact?.requestedFlagsGrant,
                     declaration = fact?.declaration,
+                    permissionsRead = permissionsRead,
                 )
             }
         }

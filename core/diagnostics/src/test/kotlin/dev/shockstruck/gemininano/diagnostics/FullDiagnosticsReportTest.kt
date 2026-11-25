@@ -5,12 +5,21 @@ import dev.shockstruck.gemininano.model.FeatureProbeResult
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFailure
 import dev.shockstruck.gemininano.model.GenAiFeature
+import dev.shockstruck.gemininano.model.GrantState
 import dev.shockstruck.gemininano.model.OfflineInferenceOutcome
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
+import dev.shockstruck.gemininano.model.PackageFacts
+import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
+import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
 import dev.shockstruck.gemininano.model.PcsBindResult
+import dev.shockstruck.gemininano.model.PcsLaunchOutcome
 import dev.shockstruck.gemininano.model.PcsSettingsResolution
 import dev.shockstruck.gemininano.model.PcsSurface
+import dev.shockstruck.gemininano.model.PermissionDeclaration
+import dev.shockstruck.gemininano.model.PermissionGrantFacts
+import dev.shockstruck.gemininano.model.PlatformPermissions
+import dev.shockstruck.gemininano.model.PlatformPrincipals
 import dev.shockstruck.gemininano.testing.TestFixtures
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -74,7 +83,11 @@ class FullDiagnosticsReportTest {
             ),
             settings = PcsSettingsResolution(true, "PcsSettingsActivity", "resolved through ACTION_APPLICATION_PREFERENCES"),
         ),
-        packages: List<dev.shockstruck.gemininano.model.PackageFacts> = emptyList(),
+        packages: List<PackageFacts> = emptyList(),
+        launchResults: List<PcsActivityLaunchResult> = emptyList(),
+        systemFeatures: List<String> = emptyList(),
+        summarization: dev.shockstruck.gemininano.model.SummarizationProbeResult? =
+            TestFixtures.probeResult(failure = TestFixtures.failure(606), baseModelName = null),
     ) = FullDiagnosticsInput(
         generatedAtEpochMillis = fixedNow,
         metadata = ExportMetadata(
@@ -87,12 +100,14 @@ class FullDiagnosticsReportTest {
         matrix = TestFixtures.permissionMatrix(),
         features = features,
         prompt = listOf(TestFixtures.promptStatus()),
-        summarization = TestFixtures.probeResult(failure = TestFixtures.failure(606), baseModelName = null),
+        summarization = summarization,
         surface = surface,
         bindResults = bindResults,
         offline = offline,
         events = events,
         packages = packages,
+        launchResults = launchResults,
+        systemFeatures = systemFeatures,
     )
 
     @Test
@@ -104,12 +119,244 @@ class FullDiagnosticsReportTest {
         assertEquals(4, json.getJSONObject("app").getInt("versionCode"))
         assertEquals(5, json.getJSONObject("permissionMatrix").getJSONArray("principals").length())
         assertEquals(GenAiFeature.MATRIX.size, json.getJSONArray("features").length())
-        assertEquals(1, json.getJSONArray("prompt").length())
+        assertEquals(4, json.getJSONArray("prompt").length())
+        assertTrue(json.has("permissionVerification"))
+        assertTrue(json.has("packageIdentities"))
+        assertTrue(json.has("systemFeatures"))
+        assertTrue(json.has("pcsLaunches"))
+        assertTrue(json.has("untestedOperations"))
         assertTrue(json.getJSONObject("summarization").has("status"))
         assertTrue(json.getJSONObject("pcs").getBoolean("packageVisible"))
         assertEquals(0, json.getJSONArray("pcsBind").length())
         assertEquals(1, json.getJSONArray("offline").length())
         assertEquals(1, json.getJSONObject("diagnostics").getInt("eventCount"))
+    }
+
+    @Test
+    fun probeExecutionIsExportedSeparatelyFromFeatureAvailability() {
+        val report = FullDiagnosticsReportBuilder().build(
+            input(
+                features = listOf(
+                    feature(GenAiFeature.REWRITING, status = FeatureStatusKind.AVAILABLE),
+                    feature(
+                        GenAiFeature.PROOFREADING,
+                        status = FeatureStatusKind.PROBE_ERROR,
+                        failure = GenAiFailure(606, "com.google.mlkit.genai.common.GenAiException", "missing"),
+                        featureId = 614,
+                    ),
+                ),
+            ),
+        )
+        val json = JSONObject(report.json)
+        val rows = (0 until json.getJSONArray("features").length())
+            .map { json.getJSONArray("features").getJSONObject(it) }
+        val rewriting = rows.first { it.getString("feature") == "rewriting" }
+        val proofreading = rows.first { it.getString("feature") == "proofreading" }
+        val agent = rows.first { it.getString("feature") == "agent" }
+        assertTrue(rewriting.getBoolean("probeExecuted"))
+        assertTrue(rewriting.getBoolean("featureAvailable"))
+        assertTrue(proofreading.getBoolean("probeExecuted"))
+        assertFalse(proofreading.getBoolean("featureAvailable"))
+        assertFalse(agent.getBoolean("probeExecuted"))
+        assertFalse(agent.getBoolean("featureAvailable"))
+        assertTrue(report.text.contains("Rewriting: AVAILABLE | probeExecuted=true | featureAvailable=true"))
+        assertTrue(report.text.contains("Agent: NOT PROBED | probeExecuted=false | featureAvailable=false"))
+    }
+
+    @Test
+    fun untestedOperationsListEveryOperationNotAttempted() {
+        val surface = PcsSurface(
+            packageVisible = true,
+            exportedComponents = emptyList(),
+            settings = PcsSettingsResolution(false, null, "none"),
+            launchTargets = listOf(
+                PcsActivityTarget(
+                    label = "PCS settings",
+                    className = "com.example.PcsSettingsActivity",
+                    declared = true,
+                    exported = true,
+                    effectivelyEnabled = true,
+                    requiredPermission = null,
+                    launchable = true,
+                    detail = "explicit tap only",
+                ),
+                PcsActivityTarget(
+                    label = "Network usage item details",
+                    className = "com.example.DetailsActivity",
+                    declared = true,
+                    exported = true,
+                    effectivelyEnabled = true,
+                    requiredPermission = null,
+                    launchable = false,
+                    detail = "requires extras that are not publicly known; no launch is attempted.",
+                ),
+            ),
+        )
+        val report = FullDiagnosticsReportBuilder().build(
+            input(
+                features = emptyList(),
+                bindResults = listOf(
+                    PcsBindResult("com.example.Grpc", PcsBindOutcome.NOT_RUN),
+                    PcsBindResult("com.example.Missing", PcsBindOutcome.NOT_DECLARED),
+                ),
+                surface = surface,
+                offline = emptyList(),
+                summarization = null,
+            ),
+        )
+        val json = JSONObject(report.json)
+        val untested = (0 until json.getJSONArray("untestedOperations").length())
+            .map { json.getJSONArray("untestedOperations").getString(it) }
+        assertTrue(untested.any { it == "Probe Rewriting" })
+        assertTrue(untested.any { it == "Prompt STABLE/FULL" })
+        assertTrue(untested.any { it == "Summarization probe" })
+        assertTrue(untested.any { it.startsWith("Bind com.example.Grpc") })
+        assertTrue(untested.any { it.startsWith("Bind com.example.Missing") })
+        assertTrue(untested.any { it.contains("Launch PCS settings") })
+        assertTrue(untested.any { it.contains("requires extras that are not publicly known") })
+        assertTrue(untested.any { it == "Offline inference matrix" })
+    }
+
+    @Test
+    fun otherPackagesKeepOnlyTheDeclaredPermissionSubset() {
+        val allowed = PlatformPermissions.OTHER_PACKAGE_PERMISSIONS.toSet()
+        val gms = PackageFacts(
+            packageName = PlatformPrincipals.GMS,
+            visibility = dev.shockstruck.gemininano.model.PackageVisibility.VISIBLE,
+            versionCode = 250000000L,
+            signingSha256 = listOf("AA:BB"),
+            requestedPermissions = allowed.toList() + "android.permission.CAMERA",
+            permissionGrants = (allowed.toList() + "android.permission.CAMERA").map { permission ->
+                PermissionGrantFacts(permission, GrantState.DENIED, requested = true)
+            },
+            firstInstallTime = 100L,
+            lastUpdateTime = 200L,
+        )
+        val pcs = PackageFacts(
+            packageName = PlatformPrincipals.PCS,
+            visibility = dev.shockstruck.gemininano.model.PackageVisibility.VISIBLE,
+            versionCode = 152997L,
+            signingSha256 = listOf("CC:DD"),
+            requestedPermissions = listOf(
+                PlatformPermissions.PCC,
+                PlatformPermissions.AICORE_BIND,
+                "com.example.OTHER",
+            ),
+            permissionGrants = listOf(
+                PermissionGrantFacts(
+                    PlatformPermissions.AICORE_BIND,
+                    GrantState.GRANTED,
+                    requested = true,
+                    requestedFlagsGrant = true,
+                    declaration = PermissionDeclaration(
+                        defined = true,
+                        declaringPackage = "android",
+                        protectionBase = 0,
+                    ),
+                ),
+                PermissionGrantFacts(
+                    PlatformPermissions.PCC,
+                    GrantState.DENIED,
+                    requested = true,
+                    requestedFlagsGrant = false,
+                    declaration = PermissionDeclaration(
+                        defined = true,
+                        declaringPackage = "android",
+                        protectionBase = 2,
+                        protectionFlags = 0x10,
+                    ),
+                ),
+                PermissionGrantFacts("com.example.OTHER", GrantState.DENIED, requested = true),
+            ),
+            firstInstallTime = 50L,
+            lastUpdateTime = 60L,
+        )
+        val aicore = PackageFacts(
+            packageName = PlatformPrincipals.AICORE,
+            visibility = dev.shockstruck.gemininano.model.PackageVisibility.VISIBLE,
+            versionCode = 545573L,
+            signingSha256 = listOf("EE:FF"),
+            requestedPermissions = listOf(PlatformPermissions.AICORE_BIND),
+            permissionGrants = listOf(
+                PermissionGrantFacts(
+                    PlatformPermissions.AICORE_BIND,
+                    GrantState.DENIED,
+                    requested = true,
+                    requestedFlagsGrant = false,
+                ),
+            ),
+            firstInstallTime = 10L,
+            lastUpdateTime = 20L,
+        )
+        val report = FullDiagnosticsReportBuilder().build(
+            input(packages = listOf(gms, pcs, aicore)),
+        )
+        val json = JSONObject(report.json)
+        val packages = (0 until json.getJSONArray("permissionVerification").length())
+            .map { json.getJSONArray("permissionVerification").getJSONObject(it) }
+            .associateBy { it.getString("packageName") }
+        val gmsPermissions = packages.getValue(PlatformPrincipals.GMS)
+            .getJSONArray("permissions")
+            .let { array -> (0 until array.length()).map { array.getJSONObject(it).getString("permission") } }
+        assertTrue(gmsPermissions.all { it in allowed })
+        assertFalse(gmsPermissions.contains("android.permission.CAMERA"))
+        val pcsPermissions = packages.getValue(PlatformPrincipals.PCS)
+            .getJSONArray("permissions")
+            .let { array -> (0 until array.length()).map { array.getJSONObject(it).getString("permission") } }
+        assertTrue(pcsPermissions.contains("com.example.OTHER"))
+        val bindFact = packages.getValue(PlatformPrincipals.AICORE)
+            .getJSONArray("permissions").getJSONObject(0)
+        assertEquals(10L, bindFact.getLong("firstInstallTime"))
+        assertEquals(20L, bindFact.getLong("lastUpdateTime"))
+        assertEquals(10L, bindFact.getLong("aicoreFirstInstallTime"))
+        val identities = (0 until json.getJSONArray("packageIdentities").length())
+            .map { json.getJSONArray("packageIdentities").getJSONObject(it) }
+            .associateBy { it.getString("packageName") }
+        assertEquals(545573L, identities.getValue(PlatformPrincipals.AICORE).getLong("versionCode"))
+        assertEquals("EE:FF", identities.getValue(PlatformPrincipals.AICORE).getJSONArray("signerSha256").getString(0))
+        assertEquals(250000000L, identities.getValue(PlatformPrincipals.GMS).getLong("versionCode"))
+    }
+
+    @Test
+    fun bindAndLaunchResultsKeepTheirOwnFacts() {
+        val report = FullDiagnosticsReportBuilder().build(
+            input(
+                bindResults = listOf(
+                    PcsBindResult(
+                        componentName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService",
+                        outcome = PcsBindOutcome.BINDER_RETURNED,
+                        role = "grpc",
+                        declaredName = "com.google.android.apps.miphone.astrea.grpc.AstreaGrpcService",
+                        interfaceDescriptor = "",
+                        binderAlive = true,
+                        descriptorReadMillis = 3L,
+                    ),
+                ),
+                launchResults = listOf(
+                    PcsActivityLaunchResult(
+                        label = "PCS settings",
+                        className = "com.example.PcsSettingsActivity",
+                        resolved = true,
+                        outcome = PcsLaunchOutcome.LAUNCHED,
+                        elapsedMillis = 12L,
+                    ),
+                ),
+                systemFeatures = listOf("android.hardware.npu", "android.software.virtualization"),
+            ),
+        )
+        val json = JSONObject(report.json)
+        val bind = json.getJSONArray("pcsBind").getJSONObject(0)
+        assertEquals("", bind.getString("interfaceDescriptor"))
+        assertEquals(true, bind.getBoolean("binderAlive"))
+        assertEquals(3L, bind.getLong("descriptorReadMillis"))
+        assertEquals("BIND_AUTO_CREATE", bind.getString("bindFlag"))
+        assertEquals("grpc", bind.getString("role"))
+        val launch = json.getJSONArray("pcsLaunches").getJSONObject(0)
+        assertEquals("launched", launch.getString("outcome"))
+        assertEquals(2, json.getJSONArray("systemFeatures").length())
+        assertTrue(report.text.contains("== System features naming NPU, AI, virtualization or private compute (names only) =="))
+        assertTrue(report.text.contains("android.hardware.npu"))
+        assertTrue(report.text.contains("this app's own bind attempt"))
     }
 
     @Test
