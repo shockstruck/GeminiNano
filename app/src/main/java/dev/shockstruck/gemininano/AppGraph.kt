@@ -3,6 +3,7 @@ package dev.shockstruck.gemininano
 import android.content.Context
 import android.os.Build
 import dev.shockstruck.gemininano.core.android.AndroidPackageInspector
+import dev.shockstruck.gemininano.core.android.InstalledManifestReader
 import dev.shockstruck.gemininano.core.android.PackageCatalog
 import dev.shockstruck.gemininano.core.android.PcsActivityLauncher
 import dev.shockstruck.gemininano.core.android.PcsSurfaceInspector
@@ -49,6 +50,9 @@ class AppGraph(context: Context) {
     )
 
     val packageFactsProvider: PackageFactsProvider = AndroidPackageInspector(appContext)
+
+    /** Reads the installed APK manifests of AICore, PCS and ASI; blocking, off the main thread. */
+    val manifestReader = InstalledManifestReader(appContext)
 
     val permissionMatrixProbe = PermissionMatrixProbe(
         provider = packageFactsProvider,

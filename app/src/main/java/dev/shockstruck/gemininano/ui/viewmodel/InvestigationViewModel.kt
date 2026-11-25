@@ -6,6 +6,7 @@ import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsInput
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReport
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReportBuilder
+import dev.shockstruck.gemininano.diagnostics.ManifestEvidenceSnapshot
 import dev.shockstruck.gemininano.diagnostics.ProvisioningDecision
 import dev.shockstruck.gemininano.diagnostics.ProvisioningEvidence
 import dev.shockstruck.gemininano.diagnostics.ReportFreshness
@@ -22,6 +23,7 @@ import dev.shockstruck.gemininano.model.OfflineInferenceFormatting
 import dev.shockstruck.gemininano.model.OfflineInferencePlanning
 import dev.shockstruck.gemininano.model.OfflineInferenceResult
 import dev.shockstruck.gemininano.model.Outcome
+import dev.shockstruck.gemininano.model.PackageFacts
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
 import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
@@ -36,6 +38,7 @@ import dev.shockstruck.gemininano.model.PlatformPrincipals
 import dev.shockstruck.gemininano.model.PromptConfigStatus
 import dev.shockstruck.gemininano.model.PromptModelConfig
 import dev.shockstruck.gemininano.model.Severity
+import dev.shockstruck.gemininano.model.SummarizationProbeResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,8 +51,13 @@ import java.util.Locale
 data class InvestigationUiState(
     val loading: Boolean = false,
     val matrix: PermissionMatrix? = null,
+    val packages: List<PackageFacts> = emptyList(),
+    val manifests: List<ManifestEvidenceSnapshot> = emptyList(),
     val surface: PcsSurface? = null,
     val prompt: List<PromptConfigStatus> = emptyList(),
+    val summarization: SummarizationProbeResult? = null,
+    val systemFeatures: List<String> = emptyList(),
+    val systemFeatureReadError: String? = null,
     val promptBusy: Boolean = false,
     val promptDownloadConfig: PromptModelConfig? = null,
     val promptDownloadText: String? = null,
@@ -139,11 +147,19 @@ class InvestigationViewModel(
             val surface = withContext(Dispatchers.IO) {
                 graph.pcsSurfaceInspector.inspect(pcs)
             }
+            val manifests = readManifests()
+            val systemFeatures = withContext(Dispatchers.IO) {
+                graph.systemFeatureFacts.read()
+            }
             val plan = PcsBindCatalog.plan(pcs)
             _state.update {
                 it.copy(
                     loading = false,
                     matrix = matrix,
+                    packages = inspected,
+                    manifests = manifests,
+                    systemFeatures = systemFeatures.names,
+                    systemFeatureReadError = systemFeatures.readErrorLabel,
                     surface = surface,
                     bindPlan = plan,
                     bindResults = plan.projectedResults(),
@@ -153,6 +169,7 @@ class InvestigationViewModel(
             logMatrix(matrix)
             logSurface(surface)
             probePromptInternal()
+            probeSummarizationInternal()
             recomputeDecision()
         }
     }
@@ -327,6 +344,7 @@ class InvestigationViewModel(
             val surface = withContext(Dispatchers.IO) {
                 graph.pcsSurfaceInspector.inspect(pcs)
             }
+            val manifests = readManifests()
             val plan = PcsBindCatalog.plan(pcs)
             _state.update { current ->
                 val attempted = current.bindResults
@@ -334,6 +352,8 @@ class InvestigationViewModel(
                     .associateBy { it.componentName }
                 current.copy(
                     matrix = matrix,
+                    packages = inspected,
+                    manifests = manifests,
                     surface = surface,
                     bindPlan = plan,
                     bindResults = plan.projectedResults().map { projected ->
@@ -354,6 +374,14 @@ class InvestigationViewModel(
             val systemFeatures = withContext(Dispatchers.IO) {
                 graph.systemFeatureFacts.read()
             }
+            _state.update {
+                it.copy(
+                    summarization = summarization,
+                    systemFeatures = systemFeatures.names,
+                    systemFeatureReadError = systemFeatures.readErrorLabel,
+                )
+            }
+            recomputeDecision()
             val now = System.currentTimeMillis()
             val snapshot = _state.value
             val report = reportBuilder.build(
@@ -370,8 +398,10 @@ class InvestigationViewModel(
                     events = graph.diagnosticBus.snapshot(),
                     packages = inspected,
                     launchResults = snapshot.launchResults,
-                    systemFeatures = systemFeatures.names,
-                    systemFeatureReadError = systemFeatures.readErrorLabel,
+                    systemFeatures = snapshot.systemFeatures,
+                    systemFeatureReadError = snapshot.systemFeatureReadError,
+                    manifests = snapshot.manifests,
+                    classification = snapshot.decision?.classification,
                 ),
             )
             graph.diagnosticBus.log(
@@ -481,6 +511,24 @@ class InvestigationViewModel(
         recomputeDecision()
     }
 
+    /**
+     * Reads the installed AICore, PCS and ASI manifests as plain facts. The reader opens
+     * APK files and throws on the main thread, so this stays on the IO dispatcher.
+     */
+    private suspend fun readManifests(): List<ManifestEvidenceSnapshot> =
+        withContext(Dispatchers.IO) {
+            graph.manifestReader.readPlatformPrincipals().map { (packageName, outcome) ->
+                ManifestEvidenceSnapshot(requestedPackage = packageName, outcome = outcome)
+            }
+        }
+
+    private suspend fun probeSummarizationInternal() {
+        val result = graph.probeRunner.probeSummarization { graph.summarizationProbe.probe() }
+        graph.probeCache.store(result)
+        _state.update { it.copy(summarization = result) }
+        recomputeDecision()
+    }
+
     private fun recomputeDecision() {
         val current = _state.value
         val decision = graph.provisioningPresenter.present(
@@ -488,6 +536,13 @@ class InvestigationViewModel(
                 matrix = current.matrix,
                 prompt = current.prompt,
                 bindResults = current.bindResults,
+                summarization = current.summarization,
+                features = current.features,
+                offline = current.offline,
+                packages = current.packages,
+                manifests = current.manifests,
+                systemFeatures = current.systemFeatures,
+                systemFeatureReadError = current.systemFeatureReadError,
             )
         )
         _state.update { it.copy(decision = decision) }

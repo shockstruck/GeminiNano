@@ -76,30 +76,34 @@ class SafeBindProbe(
                         finish(session.onNullBinding(SystemClock.elapsedRealtime()))
                         return
                     }
-                    val descriptorStart = SystemClock.elapsedRealtime()
-                    var descriptor: String? = null
-                    var descriptorError: Throwable? = null
-                    try {
-                        descriptor = service.interfaceDescriptor
-                    } catch (t: Throwable) {
-                        descriptorError = t
-                    }
-                    val descriptorMillis = SystemClock.elapsedRealtime() - descriptorStart
-                    val binderAlive = try {
-                        service.isBinderAlive
-                    } catch (t: Throwable) {
-                        null
-                    }
-                    finish(
-                        session.onBinderConnected(
+                    // The timeout runs on the main thread. The descriptor read is a remote
+                    // call and must not run here, or a hung remote would delay the timeout.
+                    session.onBinderArrived(SystemClock.elapsedRealtime())
+                    Thread({
+                        val descriptorStart = SystemClock.elapsedRealtime()
+                        var descriptor: String? = null
+                        var descriptorError: Throwable? = null
+                        try {
+                            descriptor = service.interfaceDescriptor
+                        } catch (t: Throwable) {
+                            descriptorError = t
+                        }
+                        val descriptorMillis = SystemClock.elapsedRealtime() - descriptorStart
+                        val binderAlive = try {
+                            service.isBinderAlive
+                        } catch (t: Throwable) {
+                            null
+                        }
+                        val result = session.onBinderConnected(
                             interfaceDescriptor = descriptor,
                             descriptorReadMillis = descriptorMillis,
                             descriptorErrorClass = descriptorError?.javaClass?.name,
                             descriptorErrorMessage = descriptorError?.message,
                             binderAlive = binderAlive,
                             nowMillis = SystemClock.elapsedRealtime(),
-                        ),
-                    )
+                        )
+                        if (result != null) handler.post { finish(result) }
+                    }, "pcs-bind-descriptor").apply { isDaemon = true }.start()
                 }
 
                 override fun onNullBinding(name: ComponentName?) {

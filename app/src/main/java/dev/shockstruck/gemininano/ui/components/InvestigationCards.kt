@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.shockstruck.gemininano.diagnostics.ProvisioningDecision
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.PackageFactsFormatting
 import dev.shockstruck.gemininano.model.PcsActivityLaunchResult
@@ -447,7 +448,7 @@ fun PcsBindCard(
 
 @Composable
 fun ProvisioningDecisionCard(
-    lines: List<String>?,
+    decision: ProvisioningDecision?,
     modifier: Modifier = Modifier,
 ) {
     SectionCard(
@@ -455,10 +456,69 @@ fun ProvisioningDecisionCard(
         modifier = modifier,
         subtitle = "Each line is tied to the evidence above; unknown stays unknown.",
     ) {
-        if (lines == null) {
+        if (decision == null) {
             Text("Collecting evidence…", style = MaterialTheme.typography.bodyMedium)
-        } else {
-            lines.forEach { line -> Bullet(line) }
+            return@SectionCard
+        }
+        val classification = decision.classification
+        Text(
+            text = "Failure class: ${classification.result.label}",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = classification.summary,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (classification.evidence.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Evidence used",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            classification.evidence.forEach { item -> Bullet(item.label) }
+        }
+        if (classification.refutations.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "What would refute it",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            classification.refutations.forEach { refutation -> Bullet(refutation) }
+        }
+        if (classification.candidates.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Candidates and the observation that would separate them",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            classification.candidates.forEach { candidate ->
+                Bullet(
+                    "${candidate.failureClass.label}: ${candidate.why} " +
+                        "Missing observation: ${candidate.missingObservation}",
+                )
+            }
+        }
+        classification.nextObservation?.let { next ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Next observation",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Bullet(next)
+        }
+        if (decision.lines.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Supporting observations",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            decision.lines.forEach { line -> Bullet(line) }
         }
     }
 }

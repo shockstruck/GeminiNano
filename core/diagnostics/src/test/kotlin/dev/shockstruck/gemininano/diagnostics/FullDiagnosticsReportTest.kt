@@ -569,4 +569,120 @@ class FullDiagnosticsReportTest {
         assertTrue(agent.isNull("errorCode"))
         assertFalse(report.text.contains("provisioned"))
     }
+    @Test
+    fun theClassifierAndManifestEvidenceAreExported() {
+        val classification = ProvisioningClassification(
+            result = ProvisioningFailureClass.INDETERMINATE,
+            summary = "INDETERMINATE — the 606 pattern cannot separate the remaining causes.",
+            evidence = listOf(
+                ClassifierEvidence(
+                    statement = "PCS READ_DEVICE_CONFIG requested · denied",
+                    strength = EvidenceStrength.OBSERVED,
+                    source = "permission matrix",
+                ),
+                ClassifierEvidence(
+                    statement = "The July 2025 PCS gate was read in a source mirror.",
+                    strength = EvidenceStrength.INFERRED,
+                    source = "July 2025 public PCS dump",
+                ),
+            ),
+            refutations = listOf("a PCS GetManifestConfig response"),
+            candidates = listOf(
+                ClassifierCandidate(
+                    failureClass = ProvisioningFailureClass.MISSING_FEATURE_CONFIGURATION,
+                    why = "606 is the documented signature",
+                    missingObservation = "a PCS GetManifestConfig response",
+                ),
+            ),
+            nextObservation = "Update AICore, restart the phone and probe again.",
+        )
+        val manifest = ManifestEvidenceSnapshot(
+            requestedPackage = PlatformPrincipals.PCS,
+            outcome = TestFixtures.manifestRead(
+                packageName = PlatformPrincipals.PCS,
+                pccElements = listOf(TestFixtures.associationElement(PlatformPrincipals.AICORE)),
+                components = listOf(TestFixtures.pccComponent()),
+                usesPermissions = listOf(
+                    TestFixtures.usesPermission("android.permission.READ_DEVICE_CONFIG"),
+                ),
+            ),
+        )
+        val report = FullDiagnosticsReportBuilder().build(
+            input().copy(manifests = listOf(manifest), classification = classification),
+        )
+        val json = JSONObject(report.json)
+        val classifier = json.getJSONObject("provisioningClassifier")
+        assertEquals("INDETERMINATE", classifier.getString("result"))
+        assertTrue(classifier.getBoolean("indeterminate"))
+        assertEquals(2, classifier.getJSONArray("evidence").length())
+        assertEquals(
+            "observed",
+            classifier.getJSONArray("evidence").getJSONObject(0).getString("strength"),
+        )
+        assertEquals(
+            "missing feature configuration",
+            classifier.getJSONArray("candidates").getJSONObject(0).getString("class"),
+        )
+        val manifests = json.getJSONArray("manifests")
+        assertEquals(1, manifests.length())
+        val exported = manifests.getJSONObject(0)
+        assertEquals(PlatformPrincipals.PCS, exported.getString("requestedPackage"))
+        assertEquals("read complete", exported.getString("read"))
+        val pcc = exported.getJSONObject("pccComponents")
+        assertTrue(pcc.getInt("matchedCount") > 0)
+        val component = pcc.getJSONArray("components").getJSONObject(0)
+        assertEquals("service", component.getString("kind"))
+        assertEquals("com.example.PccService", component.getString("name"))
+        assertEquals("TRUE", component.getString("privateComputeCore"))
+        assertEquals("true", component.getString("rawValue"))
+        assertEquals("true", component.getString("typedValue"))
+        assertEquals(
+            "android.permission.READ_DEVICE_CONFIG",
+            exported.getJSONArray("usesPermissions").getJSONObject(0).getString("name"),
+        )
+        assertEquals(0, exported.getJSONArray("declaredPermissions").length())
+        assertEquals(false, exported.getBoolean("partial"))
+        val element = exported.getJSONObject("associationPolicy")
+            .getJSONArray("elements").getJSONObject(0)
+        assertEquals("component-access", element.getString("name"))
+        assertEquals("name", element.getJSONArray("attributes").getJSONObject(0).getString("name"))
+        assertEquals(
+            PlatformPrincipals.AICORE,
+            element.getJSONArray("packages").getJSONObject(0).getString("name"),
+        )
+        assertTrue(report.text.contains("== Provisioning failure classifier =="))
+        assertTrue(report.text.contains("== Installed manifest evidence =="))
+        assertTrue(report.text.contains("service com.example.PccService privateComputeCore=TRUE"))
+        assertFalse(report.text.contains("Stage 6"))
+        assertTrue(report.text.contains("a declared association policy is not proof of enforcement"))
+        val trackerPrefix = "SH" + "OC-"
+        assertFalse(report.json.contains(trackerPrefix))
+        assertFalse(report.text.contains(trackerPrefix))
+    }
+
+    @Test
+    fun aPartialManifestIsMarkedAsPartialInTheReport() {
+        val read = TestFixtures.manifestRead(
+            packageName = PlatformPrincipals.PCS,
+            components = listOf(TestFixtures.pccComponent()),
+        )
+        val partial = dev.shockstruck.gemininano.model.ManifestReadOutcome.Partial(
+            PlatformPrincipals.PCS,
+            read.facts,
+        )
+        val report = FullDiagnosticsReportBuilder().build(
+            input().copy(
+                manifests = listOf(
+                    ManifestEvidenceSnapshot(PlatformPrincipals.PCS, partial),
+                ),
+            ),
+        )
+        val json = JSONObject(report.json)
+        val exported = json.getJSONArray("manifests").getJSONObject(0)
+        assertTrue(exported.getBoolean("partial"))
+        assertFalse(exported.getBoolean("complete"))
+        assertTrue(report.text.contains("partial read: absence cannot be claimed"))
+        assertTrue(report.text.contains("service com.example.PccService privateComputeCore=TRUE"))
+    }
+
 }
