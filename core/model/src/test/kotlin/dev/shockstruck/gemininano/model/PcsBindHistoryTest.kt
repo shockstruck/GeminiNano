@@ -292,6 +292,64 @@ class PcsBindHistoryTest {
     }
 
     @Test
+    fun aStoredResultFromAnotherPcsVersionCannotHideACurrentPlanFact() {
+        val planWithNotDeclared = PcsBindPlan(
+            componentsRead = true,
+            candidates = listOf(
+                PcsBindCandidate(
+                    definition = PcsBindCatalog.definitionFor(grpc),
+                    className = grpc,
+                    declaredName = grpc,
+                    requiredPermission = null,
+                    eligibility = PcsBindEligibility.NOT_DECLARED,
+                ),
+            ),
+        )
+        val history = PcsBindHistory(
+            listOf(entry(result = result(component = grpc), at = now, pcsVersionCode = 111L)),
+        )
+
+        val rows = PcsBindReport.rows(
+            plan = planWithNotDeclared,
+            history = history,
+            currentPcsVersionCode = 222L,
+            appVersionName = "0.7.0",
+            appVersionCode = 8L,
+        )
+
+        val row = rows.single()
+        assertEquals(PcsBindOutcome.NOT_DECLARED, row.result.outcome)
+        assertEquals(PcsBindProvenance.NOT_RUN, row.provenance)
+        assertEquals(
+            listOf(PcsBindOutcome.NOT_DECLARED),
+            PcsBindReport.classifierResults(rows).map { it.outcome },
+        )
+        assertEquals(
+            listOf(grpc to listOf(now)),
+            PcsBindReport.historyByComponent(history.entries)
+                .map { (component, entries) -> component to entries.map { it.observedAtEpochMillis } },
+        )
+    }
+
+    @Test
+    fun storedHistoryIsGroupedPerComponentOldestFirst() {
+        val entries = listOf(
+            entry(result = result(component = grpc), at = now + 2),
+            entry(result = result(component = genai, role = "genai_inference"), at = now + 1),
+            entry(result = result(component = grpc), at = now),
+        )
+
+        val grouped = PcsBindReport.historyByComponent(entries)
+
+        assertEquals(
+            listOf(grpc, genai).sorted(),
+            grouped.map { it.first },
+        )
+        val grpcEntries = grouped.first { it.first == grpc }.second
+        assertEquals(listOf(now, now + 2), grpcEntries.map { it.observedAtEpochMillis })
+    }
+
+    @Test
     fun historyEntriesKeepOnlyAttemptedResults() {
         val entries = PcsBindReport.historyEntries(
             results = listOf(

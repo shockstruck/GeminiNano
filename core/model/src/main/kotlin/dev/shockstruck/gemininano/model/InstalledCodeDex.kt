@@ -3,6 +3,13 @@ package dev.shockstruck.gemininano.model
 /** The input is not a DEX file this reader understands, or it is structurally invalid. */
 class InstalledCodeFormatException(message: String) : Exception(message)
 
+/** One field reference from the field table. */
+data class InstalledCodeFieldRef(
+    val className: String,
+    val name: String,
+    val typeDescriptor: String,
+)
+
 /** One method reference from the method table. */
 data class InstalledCodeMethodRef(
     val className: String,
@@ -79,6 +86,8 @@ class InstalledCodeInstruction internal constructor(
     val branchOffsetUnits: Int,
     val switchPayloadUnits: Int,
     val isPayload: Boolean,
+    /** Field table index for `sget-object` (0x62), or -1. */
+    val staticFieldIndex: Int = -1,
 )
 
 /**
@@ -165,6 +174,22 @@ class InstalledCodeDex private constructor(
             parameterTypes = proto.parameterTypes,
             returnType = proto.returnType,
         ).also { methodCache[index] = it }
+    }
+
+    val fieldCount: Int get() = header.fieldIdsSize
+
+    /** The field reference for field table entry [index]. */
+    fun field(index: Int): InstalledCodeFieldRef {
+        requireIndex(index, header.fieldIdsSize, "field")
+        val base = header.fieldIdsOffset + index * FIELD_ID_SIZE
+        val classIndex = readShort(base)
+        val typeIndex = readShort(base + 2)
+        val nameIndex = readInt(base + 4)
+        return InstalledCodeFieldRef(
+            className = typeDescriptor(classIndex),
+            name = string(nameIndex),
+            typeDescriptor = typeDescriptor(typeIndex),
+        )
     }
 
     /** The class definition for class table entry [index]. */
@@ -911,6 +936,7 @@ class InstalledCodeDex private constructor(
             var constString = -1
             var branchOffset = 0
             var switchPayload = -1
+            var staticFieldIndex = -1
             val unit1 = if (size >= 2) unitAt(address + 1) else 0
             val unit2 = if (size >= 3) unitAt(address + 2) else 0
 
@@ -1012,7 +1038,10 @@ class InstalledCodeDex private constructor(
                 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, 0xe0, 0xe1, 0xe2,
                 -> destination = (unit0 shr 8) and 0xFF
 
-                0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66 -> destination = (unit0 shr 8) and 0xFF
+                0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66 -> {
+                    destination = (unit0 shr 8) and 0xFF
+                    if (opcode == 0x62) staticFieldIndex = unit1
+                }
 
                 0x6e, 0x6f, 0x70, 0x71, 0x72 -> {
                     isInvoke = true
@@ -1085,6 +1114,7 @@ class InstalledCodeDex private constructor(
                 branchOffsetUnits = branchOffset,
                 switchPayloadUnits = switchPayload,
                 isPayload = false,
+                staticFieldIndex = staticFieldIndex,
             )
         }
 

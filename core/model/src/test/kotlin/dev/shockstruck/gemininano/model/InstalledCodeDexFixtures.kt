@@ -16,6 +16,10 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
     private val protoReturnTypes = mutableListOf<Int>()
     private val protoParameters = mutableListOf<List<Int>>()
     private val protoLookup = mutableMapOf<String, Int>()
+    private val fieldClasses = mutableListOf<Int>()
+    private val fieldTypes = mutableListOf<Int>()
+    private val fieldNames = mutableListOf<Int>()
+    private val fieldLookup = mutableMapOf<String, Int>()
     private val methodClasses = mutableListOf<Int>()
     private val methodProtos = mutableListOf<Int>()
     private val methodNames = mutableListOf<Int>()
@@ -61,6 +65,16 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
         }
     }
 
+    fun field(className: String, name: String, type: String): Int {
+        val key = "$className->$name:$type"
+        return fieldLookup.getOrPut(key) {
+            fieldClasses += type(className)
+            fieldTypes += type(type)
+            fieldNames += string(name)
+            fieldClasses.size - 1
+        }
+    }
+
     fun clazz(className: String, methods: List<MethodSpec>): SyntheticDexBuilder {
         classSpecs += ClassSpec(type(className), methods)
         return this
@@ -75,6 +89,8 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
         cursor += typeStringIndices.size * 4
         val protoIdsOffset = cursor
         cursor += protoReturnTypes.size * 12
+        val fieldIdsOffset = cursor
+        cursor += fieldClasses.size * 8
         val methodIdsOffset = cursor
         cursor += methodClasses.size * 8
         val classDefsOffset = cursor
@@ -142,8 +158,8 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
         writeIntAt(bytes, 0x44, typeIdsOffset)
         writeIntAt(bytes, 0x48, protoReturnTypes.size)
         writeIntAt(bytes, 0x4c, protoIdsOffset)
-        writeIntAt(bytes, 0x50, 0)
-        writeIntAt(bytes, 0x54, 0)
+        writeIntAt(bytes, 0x50, fieldClasses.size)
+        writeIntAt(bytes, 0x54, if (fieldClasses.isEmpty()) 0 else fieldIdsOffset)
         writeIntAt(bytes, 0x58, methodClasses.size)
         writeIntAt(bytes, 0x5c, methodIdsOffset)
         writeIntAt(bytes, 0x60, classSpecs.size)
@@ -166,6 +182,12 @@ internal class SyntheticDexBuilder(private val version: Int = 35) {
             writeIntAt(bytes, base, protoShorties[index])
             writeIntAt(bytes, base + 4, protoReturnTypes[index])
             writeIntAt(bytes, base + 8, protoParameterOffsets[index])
+        }
+        for (index in fieldClasses.indices) {
+            val base = fieldIdsOffset + index * 8
+            writeShortAt(bytes, base, fieldClasses[index])
+            writeShortAt(bytes, base + 2, fieldTypes[index])
+            writeIntAt(bytes, base + 4, fieldNames[index])
         }
         for (index in methodClasses.indices) {
             val base = methodIdsOffset + index * 8
@@ -370,8 +392,19 @@ internal object SyntheticInsns {
 
     fun moveResult(register: Int): IntArray = intArrayOf(0x0a or (register shl 8))
 
+    fun moveResultObject(register: Int): IntArray = intArrayOf(0x0c or (register shl 8))
+
+    fun sgetObject(register: Int, fieldIndex: Int): IntArray =
+        intArrayOf(0x62 or (register shl 8), fieldIndex)
+
+    fun invokeDirect(registers: IntArray, methodIndex: Int): IntArray =
+        invoke35c(0x70, registers, methodIndex)
+
     fun invokeStatic(registers: IntArray, methodIndex: Int): IntArray =
         invoke35c(0x71, registers, methodIndex)
+
+    fun invokeStaticRange(count: Int, firstRegister: Int, methodIndex: Int): IntArray =
+        intArrayOf(0x77 or (count shl 8), methodIndex, firstRegister)
 
     fun invokeVirtual(registers: IntArray, methodIndex: Int): IntArray =
         invoke35c(0x6e, registers, methodIndex)

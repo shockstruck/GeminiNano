@@ -22,6 +22,11 @@ data class PcsBindRow(
     val appVersionCode: Long? = null,
     val storedPcsVersionCode: Long? = null,
     val currentPcsVersionCode: Long? = null,
+    /**
+     * The current plan's own fact when it says the service is not declared, not exported
+     * or not enabled. A stored observation from another PCS versionCode never hides it.
+     */
+    val currentPlanResult: PcsBindResult? = null,
 ) {
     /** Binding was observed; RPC authorization and provisioning were not tested. */
     val bindingFact: String get() = PcsBindReport.bindingFact(result)
@@ -101,6 +106,7 @@ object PcsBindReport {
             val projected = candidate.projectedResult()
             val current = currentAttempts[projected.componentName]
             val stored = history.latestFor(projected.componentName)
+            val currentPlanFact = projected.takeIf { it.outcome in CURRENT_PLAN_OUTCOMES }
             when {
                 current != null -> PcsBindRow(
                     componentName = current.componentName,
@@ -112,6 +118,15 @@ object PcsBindReport {
                     appVersionCode = appVersionCode,
                     storedPcsVersionCode = currentPcsVersionCode,
                     currentPcsVersionCode = currentPcsVersionCode,
+                )
+
+                currentPlanFact != null -> PcsBindRow(
+                    componentName = projected.componentName,
+                    role = projected.role,
+                    result = projected,
+                    provenance = PcsBindProvenance.NOT_RUN,
+                    currentPcsVersionCode = currentPcsVersionCode,
+                    currentPlanResult = projected,
                 )
 
                 stored != null -> earlierRow(stored, currentPcsVersionCode)
@@ -161,7 +176,22 @@ object PcsBindReport {
 
     /** Only rows whose PCS version is current or provably unchanged feed the classifier. */
     fun classifierResults(rows: List<PcsBindRow>): List<PcsBindResult> =
-        rows.filter { it.classifierEligible }.map { it.result }
+        rows.mapNotNull { row ->
+            row.currentPlanResult ?: row.result.takeIf { row.classifierEligible }
+        }
+
+    /**
+     * The stored observations grouped per component, oldest first. The policy already
+     * keeps at most [PcsBindHistoryPolicy.MAX_RESULTS_PER_COMPONENT] per component.
+     */
+    fun historyByComponent(
+        entries: List<PcsBindHistoryEntry>,
+    ): List<Pair<String, List<PcsBindHistoryEntry>>> =
+        entries.groupBy { it.result.componentName }
+            .toSortedMap()
+            .map { (componentName, perComponent) ->
+                componentName to perComponent.sortedBy { it.observedAtEpochMillis }
+            }
 
     fun bindingFact(result: PcsBindResult): String = when {
         result.outcome.attempted -> observedBindingFact(result)
@@ -208,6 +238,13 @@ object PcsBindReport {
 
     private fun detail(result: PcsBindResult): String =
         result.exceptionMessage?.let { ": $it" }.orEmpty()
+
+    /** Plan outcomes that are facts about the current installed package, not bind runs. */
+    private val CURRENT_PLAN_OUTCOMES = setOf(
+        PcsBindOutcome.NOT_DECLARED,
+        PcsBindOutcome.NOT_EXPORTED,
+        PcsBindOutcome.NOT_ENABLED,
+    )
 }
 
 /** The pure order of one Run Full Diagnostics tap, so the bind always precedes the report. */

@@ -112,6 +112,12 @@ sealed interface InstalledCodeDefaultValue {
     data class StringValue(val value: String) : InstalledCodeDefaultValue
 
     data object Unresolved : InstalledCodeDefaultValue
+
+    /**
+     * The flag was passed with no parameter after it. This is a real observation, not a
+     * default site: nothing beside the flag name carries a value.
+     */
+    data object NoFollowingArgument : InstalledCodeDefaultValue
 }
 
 /**
@@ -172,14 +178,14 @@ data class InstalledCodeDeviceConfigFacts(
 )
 
 /** One `assets/` entry whose name matched a configured token. */
-/** One dex entry exceeded a configured input bound. */
-class InstalledCodeSizeLimitException(message: String) : Exception(message)
-
 data class InstalledCodeAssetEntryFacts(
     val apk: InstalledCodeApkId,
     val name: String,
     val sizeBytes: Long,
 )
+
+/** One dex entry exceeded a configured input bound. */
+class InstalledCodeSizeLimitException(message: String) : Exception(message)
 
 /** The number of non-directory entries under `assets/` in one APK. */
 data class InstalledCodeApkAssetCount(
@@ -263,4 +269,34 @@ sealed interface InstalledCodeOutcome {
         val versionCode: Long? = null,
         val apkSha256: List<InstalledCodeApkDigest> = emptyList(),
     ) : InstalledCodeOutcome
+}
+
+/**
+ * One package's installed-code read with the elapsed time it took.
+ *
+ * The outcome is kept whole, never collapsed into a boolean: [InstalledCodeOutcome.Read]
+ * and [InstalledCodeOutcome.Partial] carry the only facts this type can export, and the
+ * other outcomes carry the class, message or detail that stopped the read.
+ */
+data class InstalledCodePackageEvidence(
+    val requestedPackage: String,
+    val outcome: InstalledCodeOutcome,
+    val elapsedMillis: Long,
+) {
+    val outcomeLabel: String
+        get() = when (outcome) {
+            is InstalledCodeOutcome.Read -> "read"
+            is InstalledCodeOutcome.Partial -> "partial"
+            is InstalledCodeOutcome.NotVisible -> "not visible"
+            is InstalledCodeOutcome.ReadError -> "read error"
+            is InstalledCodeOutcome.TooLarge -> "too large"
+        }
+
+    /** The facts the read returned, or null when it returned none. */
+    val facts: InstalledCodePackageFacts?
+        get() = when (outcome) {
+            is InstalledCodeOutcome.Read -> outcome.facts
+            is InstalledCodeOutcome.Partial -> outcome.facts
+            else -> null
+        }
 }

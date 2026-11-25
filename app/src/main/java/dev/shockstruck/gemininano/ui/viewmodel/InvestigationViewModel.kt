@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.shockstruck.gemininano.AppGraph
 import dev.shockstruck.gemininano.BuildConfig
+import dev.shockstruck.gemininano.core.android.InstalledCodePackageReader
+import dev.shockstruck.gemininano.diagnostics.DependencyEvaluationInput
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsInput
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReport
 import dev.shockstruck.gemininano.diagnostics.FullDiagnosticsReportBuilder
@@ -18,6 +20,8 @@ import dev.shockstruck.gemininano.model.FeatureProbeResult
 import dev.shockstruck.gemininano.model.FeatureStatusKind
 import dev.shockstruck.gemininano.model.GenAiFailureClassification
 import dev.shockstruck.gemininano.model.GenAiFeature
+import dev.shockstruck.gemininano.model.InstalledCodeOutcome
+import dev.shockstruck.gemininano.model.InstalledCodePackageEvidence
 import dev.shockstruck.gemininano.model.ModelManagerRow
 import dev.shockstruck.gemininano.model.ModelManagerRules
 import dev.shockstruck.gemininano.model.OfflineInferenceFormatting
@@ -30,6 +34,7 @@ import dev.shockstruck.gemininano.model.PcsActivityTarget
 import dev.shockstruck.gemininano.model.PcsBindOutcome
 import dev.shockstruck.gemininano.model.PcsBindCatalog
 import dev.shockstruck.gemininano.model.PcsBindPlan
+import dev.shockstruck.gemininano.model.PcsBindHistoryEntry
 import dev.shockstruck.gemininano.model.PcsBindProvenance
 import dev.shockstruck.gemininano.model.PcsBindReport
 import dev.shockstruck.gemininano.model.PcsBindResult
@@ -383,6 +388,17 @@ class InvestigationViewModel(
                 graph.pcsSurfaceInspector.inspect(pcs)
             }
             val manifests = readManifests()
+            val installedCode = readInstalledCode()
+            val appUser = withContext(Dispatchers.IO) { graph.appUserFacts.read() }
+            val dependencies = graph.provisioningDependencies.evaluate(
+                DependencyEvaluationInput(
+                    appUser = appUser,
+                    packages = inspected,
+                    matrix = matrix,
+                    manifests = manifests,
+                    installedCode = installedCode,
+                ),
+            )
             val plan = PcsBindCatalog.plan(pcs)
             val pcsVersionCode = pcs?.versionCode
             val appVersionName = BuildConfig.VERSION_NAME
@@ -402,19 +418,22 @@ class InvestigationViewModel(
             val bindRows: List<PcsBindRow>
             val bindResults: List<PcsBindResult>
             val bindHistoryNote: String?
+            val bindHistoryEntries: List<PcsBindHistoryEntry>
             if (PcsBindRunPolicy.shouldBind(includeBindProbe, plan.eligibleCount)) {
                 val results = graph.safeBindProbe.probeAll(plan)
                 results.forEach { logBind(it) }
                 val observedAt = System.currentTimeMillis()
-                val history = graph.pcsBindHistoryStore.record(
-                    PcsBindReport.historyEntries(
-                        results = results,
-                        observedAtEpochMillis = observedAt,
-                        appVersionName = appVersionName,
-                        appVersionCode = appVersionCode,
-                        pcsVersionCode = pcsVersionCode,
-                    ),
-                )
+                val history = withContext(Dispatchers.IO) {
+                    graph.pcsBindHistoryStore.record(
+                        PcsBindReport.historyEntries(
+                            results = results,
+                            observedAtEpochMillis = observedAt,
+                            appVersionName = appVersionName,
+                            appVersionCode = appVersionCode,
+                            pcsVersionCode = pcsVersionCode,
+                        ),
+                    )
+                }
                 bindRows = PcsBindReport.rows(
                     plan = plan,
                     currentResults = results,
@@ -426,6 +445,7 @@ class InvestigationViewModel(
                 )
                 bindResults = PcsBindReport.classifierResults(bindRows)
                 bindHistoryNote = history.note
+                bindHistoryEntries = history.history.entries
                 _state.update {
                     it.copy(
                         bindResults = bindResults,
@@ -446,6 +466,7 @@ class InvestigationViewModel(
                 )
                 bindResults = PcsBindReport.classifierResults(bindRows)
                 bindHistoryNote = history.note
+                bindHistoryEntries = history.history.entries
                 _state.update {
                     it.copy(
                         bindResults = bindResults,
@@ -479,6 +500,7 @@ class InvestigationViewModel(
                 )
             }
             recomputeDecision()
+            installedCode.forEach(::logInstalledCode)
             val now = System.currentTimeMillis()
             val snapshot = _state.value
             val report = reportBuilder.build(
@@ -501,6 +523,10 @@ class InvestigationViewModel(
                     systemFeatureReadError = snapshot.systemFeatureReadError,
                     manifests = snapshot.manifests,
                     classification = snapshot.decision?.classification,
+                    installedCode = installedCode,
+                    appUser = appUser,
+                    dependencies = dependencies,
+                    bindHistory = bindHistoryEntries,
                 ),
             )
             graph.diagnosticBus.log(
@@ -516,7 +542,10 @@ class InvestigationViewModel(
                 it.copy(
                     fullReportBusy = false,
                     fullReport = report,
-                    fullReportMessage = "Report ready. Export it as JSON or text; no download was performed.",
+                    fullReportMessage = "Report ready. ${dependencies.resultLabel}. " +
+                        "Earlier steps not passed: " +
+                        "${dependencies.earlierStepsLabel.ifEmpty { "none" }}. " +
+                        "Export it as JSON or text; no download was performed.",
                     lastObservationAtEpochMillis = null,
                 )
             }
@@ -534,15 +563,17 @@ class InvestigationViewModel(
             results.forEach { logBind(it) }
             val observedAt = System.currentTimeMillis()
             val pcsVersionCode = pcsVersionCode(_state.value.packages)
-            val history = graph.pcsBindHistoryStore.record(
-                PcsBindReport.historyEntries(
-                    results = results,
-                    observedAtEpochMillis = observedAt,
-                    appVersionName = BuildConfig.VERSION_NAME,
-                    appVersionCode = BuildConfig.VERSION_CODE.toLong(),
-                    pcsVersionCode = pcsVersionCode,
-                ),
-            )
+            val history = withContext(Dispatchers.IO) {
+                graph.pcsBindHistoryStore.record(
+                    PcsBindReport.historyEntries(
+                        results = results,
+                        observedAtEpochMillis = observedAt,
+                        appVersionName = BuildConfig.VERSION_NAME,
+                        appVersionCode = BuildConfig.VERSION_CODE.toLong(),
+                        pcsVersionCode = pcsVersionCode,
+                    ),
+                )
+            }
             val rows = PcsBindReport.rows(
                 plan = plan,
                 currentResults = results,
@@ -642,6 +673,16 @@ class InvestigationViewModel(
         _state.update { it.copy(promptBusy = false, prompt = results) }
         recomputeDecision()
     }
+
+    /**
+     * Reads the installed AICore and PCS dex code as narrow facts. The reader opens APK
+     * files, hashes them and parses every dex, so this stays on the IO dispatcher; one
+     * package's failure is that package's own outcome and never fails the report.
+     */
+    private suspend fun readInstalledCode(): List<InstalledCodePackageEvidence> =
+        withContext(Dispatchers.IO) {
+            graph.installedCodeCollector.collect(InstalledCodePackageReader.PLATFORM_PRINCIPALS)
+        }
 
     /**
      * Reads the installed AICore, PCS and ASI manifests as plain facts. The reader opens
@@ -844,6 +885,32 @@ class InvestigationViewModel(
         )
     }
 
+    private fun logInstalledCode(evidence: InstalledCodePackageEvidence) {
+        val outcome = when (evidence.outcome) {
+            is InstalledCodeOutcome.Read -> Outcome.SUCCESS
+            is InstalledCodeOutcome.Partial -> Outcome.FAILURE
+            is InstalledCodeOutcome.NotVisible -> Outcome.SKIPPED
+            is InstalledCodeOutcome.ReadError -> Outcome.FAILURE
+            is InstalledCodeOutcome.TooLarge -> Outcome.SKIPPED
+        }
+        val detail = when (val readOutcome = evidence.outcome) {
+            is InstalledCodeOutcome.Read -> "complete"
+            is InstalledCodeOutcome.Partial -> "partial: ${readOutcome.facts.failures.size} failure(s)"
+            is InstalledCodeOutcome.NotVisible -> "not visible"
+            is InstalledCodeOutcome.ReadError -> "${readOutcome.errorClass}: ${readOutcome.message}"
+            is InstalledCodeOutcome.TooLarge -> "too large: ${readOutcome.detail}"
+        }
+        graph.diagnosticBus.log(
+            component = COMPONENT_DIAGNOSTICS,
+            operation = OPERATION_INSTALLED_CODE,
+            outcome = outcome,
+            severity = if (outcome == Outcome.FAILURE) Severity.WARN else Severity.INFO,
+            message = "installedCode=${evidence.requestedPackage} outcome=${evidence.outcomeLabel} detail=$detail",
+            featureId = evidence.requestedPackage,
+            durationMillis = evidence.elapsedMillis,
+        )
+    }
+
     private fun logLaunch(result: PcsActivityLaunchResult) {
         val outcome = when (result.outcome) {
             PcsLaunchOutcome.LAUNCHED -> Outcome.SUCCESS
@@ -896,5 +963,6 @@ class InvestigationViewModel(
         const val OPERATION_FEATURE_DOWNLOAD = "downloadFeature"
         const val OPERATION_INFERENCE = "runInference"
         const val OPERATION_FULL = "fullDiagnostics"
+        const val OPERATION_INSTALLED_CODE = "readInstalledCode"
     }
 }

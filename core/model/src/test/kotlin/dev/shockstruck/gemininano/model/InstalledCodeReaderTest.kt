@@ -120,6 +120,423 @@ class InstalledCodeReaderTest {
     }
 
     @Test
+    fun reportsNoFollowingArgumentWhenTheFlagIsTheLastStaticArgument() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;"))
+            SyntheticInsns.units(
+                SyntheticInsns.constString(0, marker),
+                SyntheticInsns.invokeStatic(intArrayOf(0), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.NoFollowingArgument),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsNoFollowingArgumentWhenTheFlagIsTheLastVirtualArgument() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "record", "V", listOf("Ljava/lang/String;"))
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.invokeVirtual(intArrayOf(0, 1), flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.NoFollowingArgument),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsNoFollowingArgumentWhenTheFlagIsTheLastRangeArgument() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val flag = builder.method(FLAG_MANAGER, "getBoolean", "Z", listOf("Ljava/lang/String;"))
+            SyntheticInsns.units(
+                SyntheticInsns.constString(0, marker),
+                SyntheticInsns.invokeStaticRange(1, 0, flag),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.NoFollowingArgument),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsNoFollowingArgumentWhenTheFlagIsTheLastConstructorArgument() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val constructor = builder.method(
+                "Ltest/FlagHolder;",
+                "<init>",
+                "V",
+                listOf("Ljava/lang/String;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.invokeDirect(intArrayOf(0, 1), constructor),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.NoFollowingArgument),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedWhenThePrefixIsPassedToConcatWithAnUnresolvedArgument() {
+        val dex = singleMethodDex { builder ->
+            val prefix = builder.string("AicDataRelease__build_id_")
+            val concat = builder.method(
+                "Ljava/lang/String;",
+                "concat",
+                "Ljava/lang/String;",
+                listOf("Ljava/lang/String;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(0, prefix),
+                SyntheticInsns.invokeVirtual(intArrayOf(0, 1), concat),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("AicDataRelease__build_id_")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun resolvesABoxedIntegerDefaultInAStaticCall() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val valueOf = builder.method(
+                "Ljava/lang/Integer;",
+                "valueOf",
+                "Ljava/lang/Integer;",
+                listOf("I"),
+            )
+            val gate = builder.method(
+                "Ltest/IntFlag;",
+                "set",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Integer;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.const4(2, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(2), valueOf),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.invokeStatic(intArrayOf(1, 2), gate),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(0)),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun resolvesABoxedIntegerDefaultInAConstructorCall() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val valueOf = builder.method(
+                "Ljava/lang/Integer;",
+                "valueOf",
+                "Ljava/lang/Integer;",
+                listOf("I"),
+            )
+            val constructor = builder.method(
+                "Ltest/IntFlag;",
+                "<init>",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Integer;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.const4(2, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(2), valueOf),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.invokeDirect(intArrayOf(0, 1, 2), constructor),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(0)),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun resolvesBooleanTrueAndFalseFromStaticFields() {
+        val dex = singleMethodDex { builder ->
+            val enabled = builder.string("ProtectedDownload__enabled")
+            val security = builder.string("PccSecurity__enable_security_check")
+            val trueField = builder.field("Ljava/lang/Boolean;", "TRUE", "Ljava/lang/Boolean;")
+            val falseField = builder.field("Ljava/lang/Boolean;", "FALSE", "Ljava/lang/Boolean;")
+            val gate = builder.method(
+                "Ltest/BoolFlag;",
+                "set",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Boolean;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, enabled),
+                SyntheticInsns.sgetObject(2, trueField),
+                SyntheticInsns.invokeStatic(intArrayOf(1, 2), gate),
+                SyntheticInsns.constString(3, security),
+                SyntheticInsns.sgetObject(4, falseField),
+                SyntheticInsns.invokeStatic(intArrayOf(3, 4), gate),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.BooleanValue(true)),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.BooleanValue(false)),
+            facts.marker("PccSecurity__enable_security_check")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun resolvesABoxMadeBeforeTheFlagString() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val valueOf = builder.method(
+                "Ljava/lang/Integer;",
+                "valueOf",
+                "Ljava/lang/Integer;",
+                listOf("I"),
+            )
+            val gate = builder.method(
+                "Ltest/IntFlag;",
+                "set",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Integer;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.const4(2, 7),
+                SyntheticInsns.invokeStatic(intArrayOf(2), valueOf),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.invokeStatic(intArrayOf(1, 2), gate),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(7)),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedForABoxPassedToTheWrongParameterType() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val valueOf = builder.method(
+                "Ljava/lang/Integer;",
+                "valueOf",
+                "Ljava/lang/Integer;",
+                listOf("I"),
+            )
+            val gate = builder.method(
+                "Ltest/BoolFlag;",
+                "set",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Boolean;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.const4(2, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(2), valueOf),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.invokeStatic(intArrayOf(1, 2), gate),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedWhenABranchSitsBetweenTheBoxAndTheCall() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("ProtectedDownload__enabled")
+            val valueOf = builder.method(
+                "Ljava/lang/Integer;",
+                "valueOf",
+                "Ljava/lang/Integer;",
+                listOf("I"),
+            )
+            val gate = builder.method(
+                "Ltest/IntFlag;",
+                "set",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Integer;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.const4(2, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(2), valueOf),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.ifEqz(3, 3),
+                SyntheticInsns.invokeStatic(intArrayOf(1, 2), gate),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("ProtectedDownload__enabled")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun resolvesABoxedDefaultThroughConcatThenAConstructor() {
+        val dex = singleMethodDex { builder ->
+            val prefix = builder.string("AicDataRelease__build_id_")
+            val valueOfInt = builder.method(
+                "Ljava/lang/Integer;",
+                "valueOf",
+                "Ljava/lang/Integer;",
+                listOf("I"),
+            )
+            val valueOfString = builder.method(
+                "Ljava/lang/String;",
+                "valueOf",
+                "Ljava/lang/String;",
+                listOf("I"),
+            )
+            val concat = builder.method(
+                "Ljava/lang/String;",
+                "concat",
+                "Ljava/lang/String;",
+                listOf("Ljava/lang/String;"),
+            )
+            val constructor = builder.method(
+                "Ltest/IntFlag;",
+                "<init>",
+                "V",
+                listOf("Ljava/lang/String;", "Ljava/lang/Integer;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, prefix),
+                SyntheticInsns.const4(2, 42),
+                SyntheticInsns.invokeStatic(intArrayOf(2), valueOfString),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.invokeVirtual(intArrayOf(1, 2), concat),
+                SyntheticInsns.moveResultObject(1),
+                SyntheticInsns.const4(3, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(3), valueOfInt),
+                SyntheticInsns.moveResultObject(3),
+                SyntheticInsns.invokeDirect(intArrayOf(0, 1, 3), constructor),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(0)),
+            facts.marker("AicDataRelease__build_id_")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedWhenTheFlagIsConcatArgument() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("AicDataRelease__build_id_")
+            val prefixText = builder.string("prefix")
+            val concat = builder.method(
+                "Ljava/lang/String;",
+                "concat",
+                "Ljava/lang/String;",
+                listOf("Ljava/lang/String;"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.constString(2, prefixText),
+                SyntheticInsns.invokeVirtual(intArrayOf(2, 1), concat),
+                SyntheticInsns.moveResultObject(2),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("AicDataRelease__build_id_")!!.references.single().defaults,
+        )
+    }
+
+    @Test
+    fun reportsUnresolvedWhenConcatHasNoMoveResultObject() {
+        val dex = singleMethodDex { builder ->
+            val marker = builder.string("AicDataRelease__build_id_")
+            val suffixText = builder.string("suffix")
+            val concat = builder.method(
+                "Ljava/lang/String;",
+                "concat",
+                "Ljava/lang/String;",
+                listOf("Ljava/lang/String;"),
+            )
+            val gate = builder.method(
+                "Ltest/IntFlag;",
+                "set",
+                "V",
+                listOf("Ljava/lang/String;", "I"),
+            )
+            SyntheticInsns.units(
+                SyntheticInsns.constString(1, marker),
+                SyntheticInsns.constString(2, suffixText),
+                SyntheticInsns.invokeVirtual(intArrayOf(1, 2), concat),
+                SyntheticInsns.const4(3, 0),
+                SyntheticInsns.invokeStatic(intArrayOf(1, 3), gate),
+                SyntheticInsns.returnVoid(),
+            )
+        }
+
+        val facts = (read(apkFile(entries = mapOf("classes.dex" to dex))) as InstalledCodeOutcome.Read).facts
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.Unresolved),
+            facts.marker("AicDataRelease__build_id_")!!.references.single().defaults,
+        )
+    }
+
+    @Test
     fun reportsUnresolvedWhenABranchSitsBetweenTheStringAndTheCall() {
         val dex = singleMethodDex { builder ->
             val marker = builder.string("ProtectedDownload__enabled")

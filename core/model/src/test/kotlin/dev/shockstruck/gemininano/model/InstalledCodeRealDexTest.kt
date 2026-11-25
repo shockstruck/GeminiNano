@@ -81,12 +81,29 @@ class InstalledCodeRealDexTest {
         val buildId = facts.marker("AicDataRelease__build_id_")
         assertNotNull(buildId)
         assertEquals(
-            setOf("AicDataRelease__build_id_aicore"),
+            setOf("AicDataRelease__build_id_aicore", "AicDataRelease__build_id_"),
             buildId!!.references.map { it.matchedString }.toSet(),
         )
+        buildId.references.forEach { reference ->
+            assertEquals(
+                "every build-id site must resolve its boxed zero",
+                listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(0)),
+                reference.defaults,
+            )
+        }
+        val runtimeKey = buildId.references.first {
+            it.matchedString == "AicDataRelease__build_id_"
+        }
         assertEquals(
             listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.IntValue(0)),
-            buildId.references.single().defaults,
+            runtimeKey.defaults,
+        )
+
+        val staticFlag = facts.marker("PccSecurity__enable_security_check")
+        assertNotNull(staticFlag)
+        assertEquals(
+            listOf<InstalledCodeDefaultValue>(InstalledCodeDefaultValue.BooleanValue(false)),
+            staticFlag!!.references.flatMap { it.defaults }.distinct(),
         )
 
         val pcsFlag = facts.marker("PcsAi__enable_genai_inference_service")

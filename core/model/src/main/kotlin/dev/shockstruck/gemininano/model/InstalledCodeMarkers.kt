@@ -195,6 +195,8 @@ private data class FlagOccurrence(
 private sealed interface Literal {
     data class IntLiteral(val value: Int) : Literal
     data class StringLiteral(val value: String) : Literal
+    data class BoxedIntLiteral(val value: Int) : Literal
+    data class BoxedBooleanLiteral(val value: Boolean) : Literal
     data object WideLiteral : Literal
     data object OtherLiteral : Literal
 }
@@ -203,6 +205,9 @@ private data class LiteralState(
     val literal: Literal,
     val position: Int,
 )
+
+private const val OP_MOVE_RESULT_OBJECT = 0x0c
+private const val OP_SGET_OBJECT = 0x62
 
 private fun resolveDefault(
     dex: InstalledCodeDex,
@@ -214,22 +219,32 @@ private fun resolveDefault(
     val occurrenceAddress = instructions[occurrence.instructionIndex].addressUnits
     val blockStart = blockStartIndex(instructions, occurrence.instructionIndex)
     val literals = HashMap<Int, LiteralState>()
-    for (index in blockStart until occurrence.instructionIndex) {
-        val instruction = instructions[index]
-        if (instruction.isPayload || instruction.isBranch) continue
-        trackLiteral(dex, instruction, literals)
-    }
+    trackBlockLiterals(dex, instructions, blockStart, occurrence.instructionIndex, literals)
     literals[occurrence.register] = LiteralState(
         Literal.StringLiteral(occurrence.matched),
         occurrenceAddress,
     )
     val stringRegisters = mutableSetOf(occurrence.register)
+    var expectingConcatResult = false
+    var previousInvoke: InstalledCodeInstruction? = null
     var index = occurrence.instructionIndex + 1
     while (index < instructions.size) {
         val instruction = instructions[index]
         if (instruction.isPayload) {
             index += 1
             continue
+        }
+        if (expectingConcatResult) {
+            if (instruction.opcode == OP_MOVE_RESULT_OBJECT && instruction.destinationRegister >= 0) {
+                stringRegisters.clear()
+                stringRegisters += instruction.destinationRegister
+                literals.remove(instruction.destinationRegister)
+                expectingConcatResult = false
+                previousInvoke = null
+                index += 1
+                continue
+            }
+            return InstalledCodeDefaultValue.Unresolved
         }
         if (instruction.isBranch) return InstalledCodeDefaultValue.Unresolved
         if (instruction.isInvoke) {
@@ -238,23 +253,68 @@ private fun resolveDefault(
                     return InstalledCodeDefaultValue.Unresolved
                 }
             } else {
-                val resolved = resolveFromInvoke(
-                    dex = dex,
-                    instruction = instruction,
-                    stringRegisters = stringRegisters,
-                    literals = literals,
-                    barriers = barriers,
-                    occurrenceAddress = occurrenceAddress,
-                )
-                if (resolved != null) return resolved
+                val methodRef = dex.method(instruction.invokeMethodIndex)
+                if (isStringConcat(methodRef)) {
+                    val registers = instruction.invokeRegisters
+                    val receiverIsFlag = !instruction.isStaticInvoke &&
+                        registers.isNotEmpty() &&
+                        registers[0] in stringRegisters
+                    val argumentIsFlag =
+                        (if (instruction.isStaticInvoke) registers.toList() else registers.drop(1))
+                            .any { it in stringRegisters }
+                    if (receiverIsFlag) {
+                        // The key is composed at run time on this value; only the concat
+                        // result can carry it further.
+                        stringRegisters.clear()
+                        expectingConcatResult = true
+                        previousInvoke = null
+                        index += 1
+                        continue
+                    }
+                    if (argumentIsFlag) return InstalledCodeDefaultValue.Unresolved
+                } else if (isStringBuilderCall(methodRef) &&
+                    instruction.invokeRegisters.any { it in stringRegisters }
+                ) {
+                    return InstalledCodeDefaultValue.Unresolved
+                } else {
+                    val resolved = resolveFromInvoke(
+                        dex = dex,
+                        instruction = instruction,
+                        stringRegisters = stringRegisters,
+                        literals = literals,
+                        barriers = barriers,
+                        occurrenceAddress = occurrenceAddress,
+                    )
+                    if (resolved != null) return resolved
+                }
             }
         }
         updateStringRegisters(instruction, stringRegisters)
+        trackLiteral(dex, instruction, literals, previousInvoke)
+        previousInvoke = if (instruction.isInvoke) instruction else null
         if (stringRegisters.isEmpty()) return InstalledCodeDefaultValue.Unresolved
-        trackLiteral(dex, instruction, literals)
         index += 1
     }
     return InstalledCodeDefaultValue.Unresolved
+}
+
+private fun trackBlockLiterals(
+    dex: InstalledCodeDex,
+    instructions: List<InstalledCodeInstruction>,
+    from: Int,
+    until: Int,
+    literals: MutableMap<Int, LiteralState>,
+) {
+    var previousInvoke: InstalledCodeInstruction? = null
+    for (index in from until until) {
+        val instruction = instructions[index]
+        if (instruction.isPayload || instruction.isBranch) {
+            previousInvoke = null
+            continue
+        }
+        trackLiteral(dex, instruction, literals, previousInvoke)
+        previousInvoke = if (instruction.isInvoke) instruction else null
+    }
 }
 
 private fun blockStartIndex(
@@ -284,7 +344,10 @@ private fun resolveFromInvoke(
     val parameterIndex = parameterStarts.indexOfFirst { start -> start in positions }
     if (parameterIndex < 0) return InstalledCodeDefaultValue.Unresolved
     val nextIndex = parameterIndex + 1
-    if (nextIndex >= methodRef.parameterTypes.size) return InstalledCodeDefaultValue.Unresolved
+    if (nextIndex >= methodRef.parameterTypes.size) {
+        // The flag is the last argument, so nothing beside it carries a value.
+        return InstalledCodeDefaultValue.NoFollowingArgument
+    }
     val word = parameterStarts[nextIndex]
     if (word >= registers.size) return InstalledCodeDefaultValue.Unresolved
     val state = literals[registers[word]] ?: return InstalledCodeDefaultValue.Unresolved
@@ -324,10 +387,71 @@ private fun literalValue(parameterType: String, literal: Literal?): InstalledCod
         parameterType == "Ljava/lang/String;" && literal is Literal.StringLiteral ->
             InstalledCodeDefaultValue.StringValue(literal.value)
 
+        parameterType in INTEGER_BOX_PARAMETER_TYPES && literal is Literal.BoxedIntLiteral ->
+            InstalledCodeDefaultValue.IntValue(literal.value)
+
+        parameterType in BOOLEAN_BOX_PARAMETER_TYPES && literal is Literal.BoxedBooleanLiteral ->
+            InstalledCodeDefaultValue.BooleanValue(literal.value)
+
         else -> InstalledCodeDefaultValue.Unresolved
     }
 
 private val INT_PARAMETER_TYPES = setOf("B", "S", "C", "I")
+private val INTEGER_BOX_PARAMETER_TYPES = setOf("Ljava/lang/Integer;", "Ljava/lang/Object;")
+private val BOOLEAN_BOX_PARAMETER_TYPES = setOf("Ljava/lang/Boolean;", "Ljava/lang/Object;")
+
+private fun isStringConcat(method: InstalledCodeMethodRef): Boolean =
+    method.className == "Ljava/lang/String;" &&
+        method.name == "concat" &&
+        method.parameterTypes == listOf("Ljava/lang/String;")
+
+private fun isStringBuilderCall(method: InstalledCodeMethodRef): Boolean =
+    method.className == "Ljava/lang/StringBuilder;"
+
+private fun boxedLiteralFromValueOf(
+    dex: InstalledCodeDex,
+    previousInvoke: InstalledCodeInstruction?,
+    literals: Map<Int, LiteralState>,
+): LiteralState? {
+    val invoke = previousInvoke ?: return null
+    if (!invoke.isInvoke || !invoke.isStaticInvoke || invoke.invokeMethodIndex < 0) return null
+    val method = dex.method(invoke.invokeMethodIndex)
+    val registers = invoke.invokeRegisters
+    if (registers.isEmpty()) return null
+    val argument = literals[registers[0]] ?: return null
+    val intLiteral = argument.literal as? Literal.IntLiteral ?: return null
+    return when {
+        method.className == "Ljava/lang/Integer;" &&
+            method.name == "valueOf" &&
+            method.parameterTypes == listOf("I") ->
+            LiteralState(Literal.BoxedIntLiteral(intLiteral.value), argument.position)
+
+        method.className == "Ljava/lang/Boolean;" &&
+            method.name == "valueOf" &&
+            method.parameterTypes == listOf("Z") &&
+            intLiteral.value in 0..1 ->
+            LiteralState(Literal.BoxedBooleanLiteral(intLiteral.value == 1), argument.position)
+
+        else -> null
+    }
+}
+
+private fun boxedLiteralFromStaticField(
+    dex: InstalledCodeDex,
+    fieldIndex: Int,
+): Literal? {
+    if (fieldIndex < 0 || fieldIndex >= dex.fieldCount) return null
+    val field = dex.field(fieldIndex)
+    return when {
+        field.className == "Ljava/lang/Boolean;" && field.name == "TRUE" ->
+            Literal.BoxedBooleanLiteral(true)
+
+        field.className == "Ljava/lang/Boolean;" && field.name == "FALSE" ->
+            Literal.BoxedBooleanLiteral(false)
+
+        else -> null
+    }
+}
 
 private fun updateStringRegisters(
     instruction: InstalledCodeInstruction,
@@ -347,6 +471,7 @@ private fun trackLiteral(
     dex: InstalledCodeDex,
     instruction: InstalledCodeInstruction,
     literals: MutableMap<Int, LiteralState>,
+    previousInvoke: InstalledCodeInstruction?,
 ) {
     val destination = instruction.destinationRegister
     if (destination < 0) return
@@ -355,6 +480,18 @@ private fun trackLiteral(
         literals[destination] = LiteralState(value, position)
     }
     when {
+        instruction.opcode == OP_MOVE_RESULT_OBJECT -> {
+            val boxed = boxedLiteralFromValueOf(dex, previousInvoke, literals)
+            if (boxed == null) literals.remove(destination)
+            else literals[destination] = boxed
+        }
+
+        instruction.opcode == OP_SGET_OBJECT -> {
+            val boxed = boxedLiteralFromStaticField(dex, instruction.staticFieldIndex)
+            if (boxed == null) literals.remove(destination)
+            else put(boxed)
+        }
+
         instruction.constKind == InstalledCodeConstKind.STRING ->
             put(Literal.StringLiteral(dex.string(instruction.constStringIndex)))
 
