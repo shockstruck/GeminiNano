@@ -1,0 +1,332 @@
+package dev.shockstruck.gemininano.model
+
+/**
+ * The fixed marker allowlist and the read-only analysis of one parsed dex.
+ *
+ * Only the listed marker strings, the literal values passed beside flag names, the names
+ * of `DeviceConfig` methods and the names of permission-check methods are kept. No other
+ * string, class content or bytecode is exposed by the analysis.
+ */
+object InstalledCodeMarkers {
+    const val READ_DEVICE_CONFIG = "android.permission.READ_DEVICE_CONFIG"
+
+    const val DEVICE_CONFIG_CLASS = "Landroid/provider/DeviceConfig;"
+
+    val PERMISSION_CHECK_METHOD_NAMES: List<String> = listOf(
+        "checkSelfPermission",
+        "checkCallingOrSelfPermission",
+    )
+
+    val MARKERS: List<InstalledCodeMarkerSpec> = listOf(
+        InstalledCodeMarkerSpec("ProtectedDownload__enabled", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("feature disabled", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.MESSAGE),
+        InstalledCodeMarkerSpec("Rejecting request since the feature is disabled", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.MESSAGE),
+        InstalledCodeMarkerSpec("Device Config not available: relying on defaults", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.MESSAGE),
+        InstalledCodeMarkerSpec(READ_DEVICE_CONFIG, InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.PERMISSION),
+        InstalledCodeMarkerSpec("device_personalization_services", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.NAMESPACE),
+        InstalledCodeMarkerSpec("PccSecurity__enable_security_check", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("PcsAi__enable_genai_inference_service", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("AstreaNetworkUsageLog__enable_network_usage_log", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("AicDataRelease__build_labels", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("AicModels__protected_download_v2_enabled", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("AicModels__preloaded_manifest_file_suffix", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("manifest.binarypb", InstalledCodeMarkerMatch.EXACT, InstalledCodeMarkerKind.ASSET),
+        InstalledCodeMarkerSpec("EMBEDDED_ASSET_MANIFEST_POPULATOR", InstalledCodeMarkerMatch.PREFIX, InstalledCodeMarkerKind.TAG),
+        InstalledCodeMarkerSpec("AicDataRelease__build_id_", InstalledCodeMarkerMatch.PREFIX, InstalledCodeMarkerKind.FLAG, resolveDefault = true),
+        InstalledCodeMarkerSpec("Disable populator for client role", InstalledCodeMarkerMatch.PREFIX, InstalledCodeMarkerKind.MESSAGE),
+        InstalledCodeMarkerSpec("com.google.android.gms.phenotype", InstalledCodeMarkerMatch.PREFIX, InstalledCodeMarkerKind.PACKAGE),
+        InstalledCodeMarkerSpec("com.google.android.gsf.gservices", InstalledCodeMarkerMatch.SUBSTRING, InstalledCodeMarkerKind.PACKAGE),
+    )
+
+    fun spec(name: String): InstalledCodeMarkerSpec = MARKERS.first { it.name == name }
+}
+
+internal data class InstalledCodeDexAnalysis(
+    val references: List<InstalledCodeMarkerReference>,
+    val permissionCheck: InstalledCodePermissionCheckReference?,
+    val deviceConfigMethodNames: List<String>,
+    val referencesTruncated: Boolean,
+)
+
+internal fun analyseInstalledCodeDex(
+    dex: InstalledCodeDex,
+    apk: InstalledCodeApkId,
+    dexEntry: String,
+    limits: InstalledCodeReadLimits,
+): InstalledCodeDexAnalysis {
+    val perMarker = HashMap<Int, LinkedHashMap<String, ReferenceAccumulator>>()
+    val deviceConfigNames = sortedSetOf<String>()
+    var referencingPermissionMethods = 0
+    var permissionCheckingMethods = 0
+    val permissionCheckNames = sortedSetOf<String>()
+    var referenceGroups = 0
+    var truncated = false
+
+    for (classIndex in 0 until dex.classCount) {
+        val classDef = dex.classDef(classIndex)
+        for (encoded in classDef.methods) {
+            if (encoded.codeOffset == 0) continue
+            val codeItem = dex.codeItem(encoded.codeOffset)
+            val instructions = dex.instructions(codeItem).asSequence().toList()
+
+            val methodMatches = LinkedHashSet<Pair<Int, String>>()
+            val flagOccurrences = mutableListOf<FlagOccurrence>()
+            var methodReferencesPermission = false
+            var methodChecksPermission = false
+
+            for ((instructionIndex, instruction) in instructions.withIndex()) {
+                if (instruction.isInvoke && instruction.invokeMethodIndex >= 0) {
+                    val methodRef = dex.method(instruction.invokeMethodIndex)
+                    if (methodRef.className == InstalledCodeMarkers.DEVICE_CONFIG_CLASS) {
+                        deviceConfigNames += methodRef.name
+                    }
+                    if (methodRef.name in InstalledCodeMarkers.PERMISSION_CHECK_METHOD_NAMES) {
+                        methodChecksPermission = true
+                        permissionCheckNames += methodRef.name
+                    }
+                }
+                if (instruction.constKind != InstalledCodeConstKind.STRING) continue
+                val value = dex.string(instruction.constStringIndex)
+                for ((specIndex, spec) in InstalledCodeMarkers.MARKERS.withIndex()) {
+                    val matched = spec.matchedText(value) ?: continue
+                    methodMatches += specIndex to matched
+                    if (spec.name == InstalledCodeMarkers.READ_DEVICE_CONFIG) {
+                        methodReferencesPermission = true
+                    }
+                    if (spec.resolveDefault) {
+                        flagOccurrences += FlagOccurrence(
+                            specIndex = specIndex,
+                            matched = matched,
+                            instructionIndex = instructionIndex,
+                            register = instruction.destinationRegister,
+                        )
+                    }
+                }
+            }
+
+            for ((specIndex, matched) in methodMatches) {
+                val byText = perMarker.getOrPut(specIndex) { LinkedHashMap() }
+                val accumulator = byText[matched]
+                if (accumulator == null) {
+                    if (referenceGroups >= limits.maxRecordedReferences) {
+                        truncated = true
+                        continue
+                    }
+                    referenceGroups += 1
+                    byText[matched] = ReferenceAccumulator(matched).also { it.methodCount += 1 }
+                } else {
+                    accumulator.methodCount += 1
+                }
+            }
+            for (occurrence in flagOccurrences) {
+                val accumulator = perMarker[occurrence.specIndex]?.get(occurrence.matched) ?: continue
+                accumulator.addDefault(
+                    resolveDefault(dex, instructions, occurrence),
+                    limits.maxDefaultsPerReference,
+                )
+            }
+            if (methodReferencesPermission) {
+                referencingPermissionMethods += 1
+                if (methodChecksPermission) permissionCheckingMethods += 1
+            }
+        }
+    }
+
+    val references = InstalledCodeMarkers.MARKERS.indices.flatMap { specIndex ->
+        perMarker[specIndex].orEmpty().values.map { accumulator ->
+            InstalledCodeMarkerReference(
+                marker = InstalledCodeMarkers.MARKERS[specIndex].name,
+                apk = apk,
+                dexEntry = dexEntry,
+                matchedString = accumulator.matched,
+                methodCount = accumulator.methodCount,
+                defaults = accumulator.defaults.toList(),
+            )
+        }
+    }
+    val permissionCheck = if (referencingPermissionMethods > 0) {
+        InstalledCodePermissionCheckReference(
+            apk = apk,
+            dexEntry = dexEntry,
+            referencingMethods = referencingPermissionMethods,
+            referencingMethodsWithPermissionCheck = permissionCheckingMethods,
+            permissionCheckMethodNames = permissionCheckNames.toList(),
+        )
+    } else {
+        null
+    }
+    return InstalledCodeDexAnalysis(
+        references = references,
+        permissionCheck = permissionCheck,
+        deviceConfigMethodNames = deviceConfigNames.toList(),
+        referencesTruncated = truncated,
+    )
+}
+
+private class ReferenceAccumulator(
+    val matched: String,
+) {
+    var methodCount: Int = 0
+    val defaults: MutableList<InstalledCodeDefaultValue> = mutableListOf()
+
+    fun addDefault(value: InstalledCodeDefaultValue, limit: Int) {
+        if (defaults.size >= limit) return
+        if (value !in defaults) defaults += value
+    }
+}
+
+private data class FlagOccurrence(
+    val specIndex: Int,
+    val matched: String,
+    val instructionIndex: Int,
+    val register: Int,
+)
+
+private sealed interface Literal {
+    data class IntLiteral(val value: Int) : Literal
+    data class StringLiteral(val value: String) : Literal
+    data object WideLiteral : Literal
+    data object OtherLiteral : Literal
+}
+
+private fun resolveDefault(
+    dex: InstalledCodeDex,
+    instructions: List<InstalledCodeInstruction>,
+    occurrence: FlagOccurrence,
+): InstalledCodeDefaultValue {
+    if (occurrence.register < 0) return InstalledCodeDefaultValue.Unresolved
+    val stringRegisters = mutableSetOf(occurrence.register)
+    val literals = HashMap<Int, Literal>()
+    var index = occurrence.instructionIndex + 1
+    while (index < instructions.size) {
+        val instruction = instructions[index]
+        if (instruction.isPayload) {
+            index += 1
+            continue
+        }
+        if (instruction.isBranch) return InstalledCodeDefaultValue.Unresolved
+        if (instruction.isInvoke && instruction.invokeMethodIndex >= 0) {
+            val resolved = resolveFromInvoke(dex, instruction, stringRegisters, literals)
+            if (resolved != null) return resolved
+        }
+        updateStringRegisters(instruction, stringRegisters)
+        if (stringRegisters.isEmpty()) return InstalledCodeDefaultValue.Unresolved
+        trackLiteral(dex, instruction, literals)
+        index += 1
+    }
+    return InstalledCodeDefaultValue.Unresolved
+}
+
+private fun resolveFromInvoke(
+    dex: InstalledCodeDex,
+    instruction: InstalledCodeInstruction,
+    stringRegisters: Set<Int>,
+    literals: Map<Int, Literal>,
+): InstalledCodeDefaultValue? {
+    val registers = instruction.invokeRegisters
+    val positions = registers.indices.filter { registers[it] in stringRegisters }
+    if (positions.isEmpty()) return null
+    val methodRef = dex.method(instruction.invokeMethodIndex)
+    val receiverOffset = if (instruction.isStaticInvoke) 0 else 1
+    val parameterStarts = parameterStartRegisters(methodRef.parameterTypes, receiverOffset)
+    val parameterIndex = parameterStarts.indexOfFirst { start -> start in positions }
+    if (parameterIndex < 0) return InstalledCodeDefaultValue.Unresolved
+    val nextIndex = parameterIndex + 1
+    if (nextIndex >= methodRef.parameterTypes.size) return InstalledCodeDefaultValue.Unresolved
+    val word = parameterStarts[nextIndex]
+    if (word >= registers.size) return InstalledCodeDefaultValue.Unresolved
+    return literalValue(methodRef.parameterTypes[nextIndex], literals[registers[word]])
+}
+
+private fun parameterStartRegisters(
+    parameterTypes: List<String>,
+    receiverOffset: Int,
+): IntArray {
+    val starts = IntArray(parameterTypes.size)
+    var cursor = receiverOffset
+    for (index in parameterTypes.indices) {
+        starts[index] = cursor
+        cursor += if (parameterTypes[index] == "J" || parameterTypes[index] == "D") 2 else 1
+    }
+    return starts
+}
+
+private fun literalValue(parameterType: String, literal: Literal?): InstalledCodeDefaultValue =
+    when {
+        literal == null -> InstalledCodeDefaultValue.Unresolved
+        parameterType == "Z" && literal is Literal.IntLiteral -> when (literal.value) {
+            0 -> InstalledCodeDefaultValue.BooleanValue(false)
+            1 -> InstalledCodeDefaultValue.BooleanValue(true)
+            else -> InstalledCodeDefaultValue.Unresolved
+        }
+
+        parameterType in INT_PARAMETER_TYPES && literal is Literal.IntLiteral ->
+            InstalledCodeDefaultValue.IntValue(literal.value)
+
+        parameterType == "Ljava/lang/String;" && literal is Literal.StringLiteral ->
+            InstalledCodeDefaultValue.StringValue(literal.value)
+
+        else -> InstalledCodeDefaultValue.Unresolved
+    }
+
+private val INT_PARAMETER_TYPES = setOf("B", "S", "C", "I")
+
+private fun updateStringRegisters(
+    instruction: InstalledCodeInstruction,
+    stringRegisters: MutableSet<Int>,
+) {
+    if (instruction.isMoveObject && instruction.moveSourceRegister in stringRegisters) {
+        if (instruction.destinationRegister >= 0) stringRegisters += instruction.destinationRegister
+        return
+    }
+    val destination = instruction.destinationRegister
+    if (destination < 0) return
+    stringRegisters -= destination
+    if (instruction.destinationIsWide) stringRegisters -= destination + 1
+}
+
+private fun trackLiteral(
+    dex: InstalledCodeDex,
+    instruction: InstalledCodeInstruction,
+    literals: MutableMap<Int, Literal>,
+) {
+    val destination = instruction.destinationRegister
+    if (destination < 0) return
+    when {
+        instruction.constKind == InstalledCodeConstKind.STRING -> {
+            val value = instruction.constStringIndex
+            literals[destination] = Literal.StringLiteral(if (value >= 0) dex.string(value) else "")
+        }
+
+        instruction.constKind == InstalledCodeConstKind.INT ->
+            literals[destination] = Literal.IntLiteral(instruction.constIntValue)
+
+        instruction.constKind == InstalledCodeConstKind.WIDE -> {
+            literals[destination] = Literal.WideLiteral
+            literals[destination + 1] = Literal.WideLiteral
+        }
+
+        instruction.constKind == InstalledCodeConstKind.OTHER ->
+            literals[destination] = Literal.OtherLiteral
+
+        instruction.opcode in 0x01..0x03 -> {
+            val source = literals[instruction.moveSourceRegister]
+            if (source == null) literals.remove(destination) else literals[destination] = source
+        }
+
+        instruction.opcode in 0x04..0x06 -> {
+            literals[destination] = Literal.WideLiteral
+            literals[destination + 1] = Literal.WideLiteral
+        }
+
+        instruction.isMoveObject -> {
+            val source = literals[instruction.moveSourceRegister]
+            if (source == null) literals.remove(destination) else literals[destination] = source
+        }
+
+        else -> {
+            literals.remove(destination)
+            if (instruction.destinationIsWide) literals.remove(destination + 1)
+        }
+    }
+}
