@@ -8,6 +8,9 @@ enum class FeatureStatusKind(val label: String) {
     UNAVAILABLE("UNAVAILABLE"),
     UNKNOWN("UNKNOWN"),
     PROBE_ERROR("PROBE ERROR"),
+
+    /** The published artifact has no usable public surface for this app. */
+    NOT_IN_PUBLIC_API("NOT AVAILABLE IN THE PUBLIC API"),
 }
 
 /** A project-owned copy of an ML Kit GenAI failure; no SDK type crosses the module boundary. */
@@ -38,7 +41,19 @@ data class DownloadResult(
     val bytesDownloaded: Long?,
     val totalBytes: Long?,
     val failure: GenAiFailure?,
-)
+) {
+    /**
+     * A failed download that had started and reported fewer bytes than its own total.
+     * This is the only interruption signal the public callbacks expose; no other
+     * cause is inferred from it.
+     */
+    val interrupted: Boolean
+        get() = !success &&
+            bytesDownloaded != null &&
+            totalBytes != null &&
+            bytesDownloaded > 0 &&
+            bytesDownloaded < totalBytes
+}
 
 data class SummarizationRunResult(
     val success: Boolean,
