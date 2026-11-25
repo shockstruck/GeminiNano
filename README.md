@@ -1,7 +1,7 @@
 # Gemini Nano Manager
 
 A rootless diagnostic and management app for Android AICore and the public ML Kit GenAI
-surfaces on GrapheneOS. Version 0.6.0 reports what an ordinary sandboxed app can actually
+surfaces on GrapheneOS. Version 0.6.1 reports what an ordinary sandboxed app can actually
 observe, probes every public ML Kit GenAI capability independently, offers only
 user-triggered downloads, runs a fixed-input inference matrix, keeps the original
 on-device summarization, and classifies the provisioning failure it can and cannot
@@ -12,7 +12,7 @@ demo. Internal experimental derivative; not affiliated with Google.
 
 ## Install on the device (no ADB required)
 
-The deliverable is the `offline` debug build, versionName **`0.6.0-offline`** (versionCode 6),
+The deliverable is the `offline` debug build, versionName **`0.6.1-offline`** (versionCode 7),
 applicationId `dev.shockstruck.gemininano`. The `Build offline debug APK` workflow builds it on
 every push and pull request and uploads it as the `gemini-nano-manager-offline-debug` artifact;
 you can also build it locally (see [Build](#build)). Installing it needs only the phone:
@@ -25,7 +25,7 @@ you can also build it locally (see [Build](#build)). Installing it needs only th
    (`Settings → Apps → Special app access → Install unknown apps`); the grant belongs to the
    file manager or browser, not to Gemini Nano Manager.
 3. **Tap the APK and confirm the identity.** The installer should show **Gemini Nano Manager** and
-   version `0.6.0-offline`. If your installer does not display the package name or version code,
+   version `0.6.1-offline`. If your installer does not display the package name or version code,
    confirm them after the first launch in **Settings → Version and provenance** (Application ID
    `dev.shockstruck.gemininano`, version name and code) and in **System Components** (version,
    installer and signing certificate SHA-256). If the package name or version differs, you are
@@ -170,6 +170,9 @@ and for INDETERMINATE the still-open candidates each with its missing observatio
   is a candidate**, because a local eligibility read looks the same. Source words match as whole
   words, so `RemoteException` and `system_server` do not count; a rejection with only `provision`
   or `download` in the clause is a candidate too.
+- **A `401` or `403` counts only as an HTTP or status code.** `HTTP 403`, `HTTP/1.1 403`,
+  `status 403` and `status code 403` satisfy the remote rejection rule; a bare number such as
+  “cloud feature 403 is pending” does not.
 - **Negated failure words do not count.** “not denied”, “not rejected” and “not missing” do not
   satisfy the NPU, remote, configuration or registration rule.
 - **A generation that succeeded conflicts with any selected class** and makes the result
